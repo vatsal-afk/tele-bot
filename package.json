@@ -1,0 +1,26 @@
+{
+  "name": "tele-bot",
+  "version": "1.0.0",
+  "description": "Private-First Conversational Hostel Fitness & Expense Orchestrator",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.21.1",
+    "groq-sdk": "^0.7.0",
+    "idb": "^8.0.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.11.0",
+    "@types/uuid": "^9.0.8",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

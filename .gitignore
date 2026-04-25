@@ -1,0 +1,6 @@
+/dist/
+.env
+node_modules/
+
+/IMPLEMENTATION_PLAN.md
+/plan.md
