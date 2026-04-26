@@ -11,6 +11,9 @@ const handleUpdate = webhookCallback(bot, 'express');
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     try {
+      if (!bot.isInited) {
+        await bot.init();
+      }
       await handleUpdate(req as any, res as any);
     } catch (err) {
       console.error('Webhook error:', err);
