@@ -35,15 +35,20 @@ async function ensureDB() {
 // Onboarding state is persisted in Neon (stateless-safe)
 
 bot.command('start', async (ctx) => {
+  console.log('Start command triggered');
   await ensureDB();
+  console.log('DB ensured');
   const odid = ctx.from?.id.toString();
   
   if (!odid) {
+    console.log('No user ID found');
     await ctx.reply('Unable to identify user. Please try again.');
     return;
   }
 
+  console.log('Fetching user profile for', odid);
   const profile = await getUserProfile(odid);
+  console.log('Profile fetched:', !!profile);
   
   if (!profile || !profile.isOnboarded) {
     await saveOnboardingState(odid, { step: 0, data: { odid } });

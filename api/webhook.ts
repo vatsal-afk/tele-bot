@@ -11,9 +11,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     try {
       if (!bot.isInited()) {
+        console.log('Initializing bot...');
         await bot.init();
+        console.log('Bot initialized.');
       }
+      console.log('Handling update:', req.body.update_id);
       await bot.handleUpdate(req.body);
+      console.log('Update handled successfully');
       res.status(200).json({ ok: true });
     } catch (err) {
       console.error('Webhook error:', err);
