@@ -10,7 +10,7 @@ import { bot } from '../src/bot/index.js';
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     try {
-      if (!bot.isInited) {
+      if (!bot.isInited()) {
         await bot.init();
       }
       await bot.handleUpdate(req.body);
