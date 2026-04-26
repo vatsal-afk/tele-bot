@@ -2,7 +2,7 @@ import { Bot, Keyboard, InlineKeyboard } from 'grammy';
 import type { Context } from 'grammy';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
-import { initDB, getUserProfile, saveUserProfile, getDailyLog, addDailyLogEntry, getSessionState, saveSessionState, getCanteenItems, saveCanteenItems, getMessMenu, saveMessMenu, saveVendorItems, getAllUsers } from '../db/index.js';
+import { initDB, getUserProfile, saveUserProfile, getDailyLog, addDailyLogEntry, getCanteenItems, saveCanteenItems, getMessMenu, saveMessMenu, saveVendorItems, getAllUsers, getSessionHistory, saveSessionHistory, getOnboardingState, saveOnboardingState, deleteOnboardingState } from '../db/index.js';
 import { computeICMRTargets } from '../utils/icmr.js';
 import { getNutritionalGap } from '../utils/icmr.js';
 import { rankItems, generateSuggestion, checkBudgetAndSuggestAlternative, formatSuggestionMessage, calculateCaloriesBurned, type Constraint } from '../services/gapFiller.js';
@@ -12,8 +12,7 @@ import { loadCanteenItems, loadMessSchedule, loadVendorLibrary } from '../db/kno
 
 dotenv.config();
 
-const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN || '');
-const sessionHistory = new Map<string, { role: string; content: string }[]>();
+export const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN || '');
 
 let dbInitialized = false;
 
@@ -33,10 +32,7 @@ async function ensureDB() {
   }
 }
 
-// Onboarding state management
-const onboardingState: Map<string, { step: number; data: any }> = new Map();
-
-// Removed old ONBOARDING_STEPS array
+// Onboarding state is persisted in Neon (stateless-safe)
 
 bot.command('start', async (ctx) => {
   await ensureDB();
@@ -50,7 +46,7 @@ bot.command('start', async (ctx) => {
   const profile = await getUserProfile(odid);
   
   if (!profile || !profile.isOnboarded) {
-    onboardingState.set(odid, { step: 0, data: { odid } });
+    await saveOnboardingState(odid, { step: 0, data: { odid } });
     await ctx.reply("Welcome to IITR Hostel Fitness Tracker! 🚀\n\nTo set up your personalized ICMR-NIN targets, please tell me your details in one message.\n\nFor example: \"I am 21 years old, 65kg, 170cm, male. I am moderately active, vegetarian, and want to gain muscle. My daily budget is 150 Rs.\"");
   } else {
     await showDashboard(ctx, odid);
@@ -280,7 +276,7 @@ bot.on('message:text', async (ctx) => {
   await ensureDB();
   
   // Handle onboarding
-  const onBoarding = onboardingState.get(userId);
+  const onBoarding = await getOnboardingState(userId);
   if (onBoarding) {
     // Send to Groq to extract profile
     const intent = await classifyIntent(message, {
@@ -307,7 +303,7 @@ bot.on('message:text', async (ctx) => {
       };
       
       await saveUserProfile(newProfile);
-      onboardingState.delete(userId);
+      await deleteOnboardingState(userId);
       
       await ctx.reply('🎉 Onboarding complete! Your daily targets:\n' +
         `🔥 Calories: ${Math.round(targets.calories)}kcal\n🥩 Protein: ${Math.round(targets.protein)}g\n💧 Water: ${Math.round(targets.waterMl)}ml`);
@@ -342,7 +338,7 @@ bot.on('message:text', async (ctx) => {
 
   // Classify intent via Groq (with local fallback)
   console.log(`[NLU] Classifying: "${message}"`);
-  const history = sessionHistory.get(userId) || [];
+  const history = await getSessionHistory(userId);
   const intent = await classifyIntent(message, {
     gapSummary, budgetRemaining,
     todayMealsLogged: mealsLogged,
@@ -407,8 +403,7 @@ bot.on('message:text', async (ctx) => {
       if (existingMeal && newItems.length === 0 && !intent.cost) {
         // Nothing new to add, probably conversational follow-up
         await ctx.reply(`You've already logged ${foodNames} for ${mealType}! Keep up the good work. 💪`);
-        const history = sessionHistory.get(userId) || [];
-        sessionHistory.set(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: `You've already logged ${foodNames} for ${mealType}!`}]);
+        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: `You've already logged ${foodNames} for ${mealType}!`}]);
         break;
       }
 
@@ -442,9 +437,7 @@ bot.on('message:text', async (ctx) => {
       if (intent.cost) reply += `Cost: ₹${intent.cost}\n`;
       
       await ctx.reply(reply);
-      // Update session history
-      const history = sessionHistory.get(userId) || [];
-      sessionHistory.set(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
+      await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
       break;
     }
 
@@ -502,7 +495,7 @@ bot.on('message:text', async (ctx) => {
           reply_markup: new InlineKeyboard()
             .text(`✅ ${check.alternative.itemName}`, `accept:${check.alternative.itemName}`),
         });
-        sessionHistory.set(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: check.message || 'Budget exceeded'}]);
+        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: check.message || 'Budget exceeded'}]);
       } else {
         const suggestion = generateSuggestion(topItem, gap);
         const suggestionMsg = formatSuggestionMessage(suggestion);
@@ -511,7 +504,7 @@ bot.on('message:text', async (ctx) => {
             .text('✅ Log This', `accept:${topItem.itemName}`)
             .text('❌ Skip', 'reject:suggestion'),
         });
-        sessionHistory.set(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: suggestionMsg}]);
+        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: suggestionMsg}]);
       }
       break;
     }
@@ -554,7 +547,7 @@ bot.on('message:text', async (ctx) => {
         recentHistory: history,
       });
       await ctx.reply(reply);
-      sessionHistory.set(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
+      await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
       break;
     }
   }
@@ -722,7 +715,5 @@ function startNotificationJob() {
   }, 60000); // Check every minute
 }
 
-bot.start();
-startNotificationJob();
-
-console.log('Bot started and polling...');
+// Export for webhook mode (Vercel)
+// startNotificationJob is called separately via GitHub Actions cron

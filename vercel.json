@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "functions": {
+    "api/webhook.ts": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    { "src": "/webhook", "dest": "/api/webhook" },
+    { "src": "/(.*)", "dest": "/api/webhook" }
+  ]
+}

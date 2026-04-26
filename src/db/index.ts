@@ -1,442 +1,291 @@
-import Database from 'better-sqlite3';
-import { v4 as uuidv4 } from 'uuid';
-import path from 'path';
+import { neon } from '@neondatabase/serverless';
+import dotenv from 'dotenv';
+dotenv.config();
 
-let db: Database.Database | null = null;
+const sql = neon(process.env.DATABASE_URL!);
 
-function getDb(): Database.Database {
-  if (!db) throw new Error('DB not initialized');
-  return db;
-}
-
-export type BotState = 
-  | 'IDLE'
-  | 'ONBOARDING'
-  | 'DASHBOARD'
-  | 'AWAITING_MEAL_CONFIRM'
-  | 'COACH_MODE'
-  | 'WAITING_SUGGESTION_REJECTION'
-  | 'EXERCISE_LOG'
-  | 'WATER_LOG'
-  | 'EXPENSE_SUMMARY'
-  | 'WEEKLY_REFLECTION'
-  | 'SETTINGS'
-  | 'OFFLINE_FALLBACK';
+export type BotState =
+  | 'IDLE' | 'ONBOARDING' | 'DASHBOARD' | 'AWAITING_MEAL_CONFIRM'
+  | 'COACH_MODE' | 'WAITING_SUGGESTION_REJECTION' | 'EXERCISE_LOG'
+  | 'WATER_LOG' | 'EXPENSE_SUMMARY' | 'WEEKLY_REFLECTION' | 'SETTINGS' | 'OFFLINE_FALLBACK';
 
 export interface UserProfile {
-  odid: string;
-  createdAt: number;
-  age: number;
-  height: number;
-  weight: number;
-  sex: 'male' | 'female';
-  activityLevel: number;
+  odid: string; createdAt: number; age: number; height: number; weight: number;
+  sex: 'male' | 'female'; activityLevel: number;
   dietType: 'vegetarian' | 'eggetarian' | 'non-vegetarian';
-  hostel: string;
-  messZone: string;
+  hostel: string; messZone: string;
   fitnessGoal: 'weight-loss' | 'muscle-gain' | 'maintenance';
-  dailyBudget: number;
-  weeklyBudget: number;
-  campusZone: string;
+  dailyBudget: number; weeklyBudget: number; campusZone: string;
   notifications: { breakfast: string; lunch: string; dinner: string; customReminders: any[]; lastNotified?: { breakfast?: string; lunch?: string; dinner?: string; weeklyMenuRequest?: string } };
   targets: { calories: number; protein: number; carbs: number; fats: number; waterMl: number };
   isOnboarded: boolean;
 }
 
 export interface DailyLogEntry {
-  id: string;
-  odid: string;
-  date: string;
+  id: string; odid: string; date: string;
   eventType: 'meal' | 'exercise' | 'water';
-  mealType?: string;
-  source?: string;
+  mealType?: string; source?: string;
   items?: Array<{ name: string; quantity: number; macros: { calories: number; protein: number; carbs: number; fats: number } }>;
-  exerciseType?: string;
-  duration?: number;
-  sets?: number;
-  reps?: number;
-  caloriesBurned?: number;
-  waterMl?: number;
-  timestamp: number;
-  isConfirmed: boolean;
-  isMissed: boolean;
-  cost?: number;
+  exerciseType?: string; duration?: number; sets?: number; reps?: number;
+  caloriesBurned?: number; waterMl?: number; timestamp: number;
+  isConfirmed: boolean; isMissed: boolean; cost?: number;
 }
 
 export interface SessionState {
-  sessionId: string;
-  odid: string;
-  startedAt: number;
-  currentState: BotState;
+  sessionId: string; odid: string; startedAt: number; currentState: BotState;
   currentGap: { calories: number; protein: number; carbs: number; fats: number };
   constraintStack: Array<{ type: string; value: any }>;
-  suggestions: Array<any>;
-  budgetRemaining: number;
+  suggestions: Array<any>; budgetRemaining: number;
 }
 
 export interface CanteenItem {
-  id: string;
-  name: string;
-  category: string;
+  id: string; name: string; category: string;
   baseMacros: { calories: number; protein: number; carbs: number; fats: number };
   adjustedMacros: { calories: number; protein: number; carbs: number; fats: number };
-  price: number;
-  isVeg: boolean;
-  temperature?: string;
+  price: number; isVeg: boolean; temperature?: string;
 }
 
 export interface MessMenuItem {
-  id: string;
-  dayOfWeek: number;
-  mealType: string;
-  items: string[];
+  id: string; dayOfWeek: number; mealType: string; items: string[];
   estimatedMacros: { calories: number; protein: number; carbs: number; fats: number };
 }
 
 export interface VendorItem {
-  id: string;
-  name: string;
-  location: string;
-  category: string;
+  id: string; name: string; location: string; category: string;
   macros: { calories: number; protein: number; carbs: number; fats: number };
-  priceRange: { min: number; max: number };
-  isVeg: boolean;
-  temperature?: string;
+  priceRange: { min: number; max: number }; isVeg: boolean; temperature?: string;
 }
 
-export async function initDB(): Promise<Database.Database> {
-  if (db) return db;
-  
-  const dbPath = process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.resolve('./data.db');
-  db = new Database(dbPath);
-  
-  db.exec(`
+let dbInitialized = false;
+
+export async function initDB(): Promise<void> {
+  if (dbInitialized) return;
+  await sql`
     CREATE TABLE IF NOT EXISTS user_profile (
-      odid TEXT PRIMARY KEY,
-      createdAt INTEGER,
-      age INTEGER,
-      height INTEGER,
-      weight INTEGER,
-      sex TEXT,
-      activityLevel REAL,
-      dietType TEXT,
-      hostel TEXT,
-      messZone TEXT,
-      fitnessGoal TEXT,
-      dailyBudget INTEGER,
-      weeklyBudget INTEGER,
-      campusZone TEXT,
-      notifications TEXT,
-      targets TEXT,
-      isOnboarded INTEGER DEFAULT 0
-    );
-
+      odid TEXT PRIMARY KEY, createdat BIGINT, age INTEGER, height INTEGER, weight INTEGER,
+      sex TEXT, activitylevel REAL, diettype TEXT, hostel TEXT, messzone TEXT,
+      fitnessgoal TEXT, dailybudget INTEGER, weeklybudget INTEGER, campuszone TEXT,
+      notifications TEXT, targets TEXT, isonboarded INTEGER DEFAULT 0
+    )`;
+  await sql`
     CREATE TABLE IF NOT EXISTS daily_log (
-      id TEXT PRIMARY KEY,
-      odid TEXT,
-      date TEXT,
-      eventType TEXT,
-      mealType TEXT,
-      source TEXT,
-      items TEXT,
-      exerciseType TEXT,
-      duration INTEGER,
-      sets INTEGER,
-      reps INTEGER,
-      caloriesBurned INTEGER,
-      waterMl INTEGER,
-      timestamp INTEGER,
-      isConfirmed INTEGER,
-      isMissed INTEGER,
-      cost INTEGER
-    );
-
-    CREATE TABLE IF NOT EXISTS session_state (
-      sessionId TEXT PRIMARY KEY,
-      odid TEXT,
-      startedAt INTEGER,
-      currentState TEXT,
-      currentGap TEXT,
-      constraintStack TEXT,
-      suggestions TEXT,
-      budgetRemaining INTEGER
-    );
-
+      id TEXT PRIMARY KEY, odid TEXT, date TEXT, eventtype TEXT, mealtype TEXT,
+      source TEXT, items TEXT, exercisetype TEXT, duration INTEGER, sets INTEGER,
+      reps INTEGER, caloriesburned INTEGER, waterml INTEGER, timestamp BIGINT,
+      isconfirmed INTEGER, ismissed INTEGER, cost INTEGER
+    )`;
+  await sql`
     CREATE TABLE IF NOT EXISTS canteen_items (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      category TEXT,
-      baseMacros TEXT,
-      adjustedMacros TEXT,
-      price INTEGER,
-      isVeg INTEGER,
-      temperature TEXT
-    );
-
+      id TEXT PRIMARY KEY, name TEXT, category TEXT, basemacros TEXT,
+      adjustedmacros TEXT, price INTEGER, isveg INTEGER, temperature TEXT
+    )`;
+  await sql`
     CREATE TABLE IF NOT EXISTS mess_menu (
-      id TEXT PRIMARY KEY,
-      dayOfWeek INTEGER,
-      mealType TEXT,
-      items TEXT,
-      estimatedMacros TEXT
-    );
-
+      id TEXT PRIMARY KEY, dayofweek INTEGER, mealtype TEXT, items TEXT, estimatedmacros TEXT
+    )`;
+  await sql`
     CREATE TABLE IF NOT EXISTS vendor_items (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      location TEXT,
-      category TEXT,
-      macros TEXT,
-      priceRange TEXT,
-      isVeg INTEGER,
-      temperature TEXT
-    );
-  `);
-  
-  return db;
+      id TEXT PRIMARY KEY, name TEXT, location TEXT, category TEXT, macros TEXT,
+      pricerange TEXT, isveg INTEGER, temperature TEXT
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS session_history (
+      odid TEXT PRIMARY KEY, messages TEXT NOT NULL DEFAULT '[]', updatedat BIGINT
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS onboarding_state (
+      odid TEXT PRIMARY KEY, step INTEGER, data TEXT
+    )`;
+  dbInitialized = true;
 }
+
+// ── User Profile ──────────────────────────────────────────────────────────────
 
 export async function getUserProfile(odid: string): Promise<UserProfile | undefined> {
-  const database = getDb();
-  const row = database.prepare('SELECT * FROM user_profile WHERE odid = ?').get(odid) as any;
-  if (!row) return undefined;
-  
+  const rows = await sql`SELECT * FROM user_profile WHERE odid = ${odid}`;
+  if (!rows[0]) return undefined;
+  const r = rows[0];
   return {
-    ...row,
-    notifications: JSON.parse(row.notifications || '{}'),
-    targets: JSON.parse(row.targets || '{}'),
-    isOnboarded: Boolean(row.isOnboarded),
+    odid: r.odid, createdAt: Number(r.createdat), age: r.age, height: r.height,
+    weight: r.weight, sex: r.sex, activityLevel: r.activitylevel, dietType: r.diettype,
+    hostel: r.hostel, messZone: r.messzone, fitnessGoal: r.fitnessgoal,
+    dailyBudget: r.dailybudget, weeklyBudget: r.weeklybudget, campusZone: r.campuszone,
+    notifications: JSON.parse(r.notifications || '{}'),
+    targets: JSON.parse(r.targets || '{}'),
+    isOnboarded: Boolean(r.isonboarded),
   };
 }
 
 export async function getAllUsers(): Promise<UserProfile[]> {
-  const database = getDb();
-  const rows = database.prepare('SELECT * FROM user_profile').all() as any[];
-  return rows.map(row => ({
-    ...row,
-    notifications: JSON.parse(row.notifications || '{}'),
-    targets: JSON.parse(row.targets || '{}'),
-    isOnboarded: Boolean(row.isOnboarded),
+  const rows = await sql`SELECT * FROM user_profile`;
+  return rows.map(r => ({
+    odid: r.odid, createdAt: Number(r.createdat), age: r.age, height: r.height,
+    weight: r.weight, sex: r.sex, activityLevel: r.activitylevel, dietType: r.diettype,
+    hostel: r.hostel, messZone: r.messzone, fitnessGoal: r.fitnessgoal,
+    dailyBudget: r.dailybudget, weeklyBudget: r.weeklybudget, campusZone: r.campuszone,
+    notifications: JSON.parse(r.notifications || '{}'),
+    targets: JSON.parse(r.targets || '{}'),
+    isOnboarded: Boolean(r.isonboarded),
   }));
 }
 
-export async function saveUserProfile(profile: UserProfile): Promise<void> {
-  const database = getDb();
-  const s = JSON.stringify(profile.notifications);
-  const t = JSON.stringify(profile.targets);
-  console.log('Saving profile.notifications length:', s.length, 'targets length:', t.length);
-const stmt = database.prepare(`
-    INSERT OR REPLACE INTO user_profile 
-    (odid, createdAt, age, height, weight, sex, activityLevel, dietType, hostel, messZone, fitnessGoal, dailyBudget, weeklyBudget, campusZone, notifications, targets, isOnboarded)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const values = [
-    profile.odid,
-    profile.createdAt,
-    profile.age,
-    profile.height,
-    profile.weight,
-    profile.sex,
-    profile.activityLevel,
-    profile.dietType,
-    profile.hostel,
-    profile.messZone,
-    profile.fitnessGoal,
-    profile.dailyBudget,
-    profile.weeklyBudget,
-    profile.campusZone,
-    s,
-    t,
-    profile.isOnboarded ? 1 : 0
-  ];
-  console.log('Values count:', values.length);
-  const result = stmt.run(...values);
+export async function saveUserProfile(p: UserProfile): Promise<void> {
+  const n = JSON.stringify(p.notifications);
+  const t = JSON.stringify(p.targets);
+  await sql`
+    INSERT INTO user_profile (odid, createdat, age, height, weight, sex, activitylevel,
+      diettype, hostel, messzone, fitnessgoal, dailybudget, weeklybudget, campuszone,
+      notifications, targets, isonboarded)
+    VALUES (${p.odid}, ${p.createdAt}, ${p.age}, ${p.height}, ${p.weight}, ${p.sex},
+      ${p.activityLevel}, ${p.dietType}, ${p.hostel}, ${p.messZone}, ${p.fitnessGoal},
+      ${p.dailyBudget}, ${p.weeklyBudget}, ${p.campusZone}, ${n}, ${t},
+      ${p.isOnboarded ? 1 : 0})
+    ON CONFLICT (odid) DO UPDATE SET
+      createdat = EXCLUDED.createdat, age = EXCLUDED.age, height = EXCLUDED.height,
+      weight = EXCLUDED.weight, sex = EXCLUDED.sex, activitylevel = EXCLUDED.activitylevel,
+      diettype = EXCLUDED.diettype, hostel = EXCLUDED.hostel, messzone = EXCLUDED.messzone,
+      fitnessgoal = EXCLUDED.fitnessgoal, dailybudget = EXCLUDED.dailybudget,
+      weeklybudget = EXCLUDED.weeklybudget, campuszone = EXCLUDED.campuszone,
+      notifications = EXCLUDED.notifications, targets = EXCLUDED.targets,
+      isonboarded = EXCLUDED.isonboarded`;
 }
+
+// ── Daily Log ─────────────────────────────────────────────────────────────────
 
 export async function getDailyLog(odid: string, date: string): Promise<DailyLogEntry[]> {
-  const database = getDb();
-  const rows = database.prepare('SELECT * FROM daily_log WHERE odid = ? AND date = ?').all(odid, date) as any[];
-  return rows.map(row => ({
-    id: row.id,
-    odid: row.odid,
-    date: row.date,
-    eventType: row.eventType,
-    mealType: row.mealType,
-    source: row.source,
-    items: row.items ? JSON.parse(row.items) : undefined,
-    exerciseType: row.exerciseType,
-    duration: row.duration,
-    sets: row.sets,
-    reps: row.reps,
-    caloriesBurned: row.caloriesBurned,
-    waterMl: row.waterMl,
-    timestamp: row.timestamp,
-    isConfirmed: Boolean(row.isConfirmed),
-    isMissed: Boolean(row.isMissed),
-    cost: row.cost,
+  const rows = await sql`SELECT * FROM daily_log WHERE odid = ${odid} AND date = ${date}`;
+  return rows.map(r => ({
+    id: r.id, odid: r.odid, date: r.date, eventType: r.eventtype,
+    mealType: r.mealtype, source: r.source,
+    items: r.items ? JSON.parse(r.items) : undefined,
+    exerciseType: r.exercisetype, duration: r.duration, sets: r.sets, reps: r.reps,
+    caloriesBurned: r.caloriesburned, waterMl: r.waterml,
+    timestamp: Number(r.timestamp), isConfirmed: Boolean(r.isconfirmed),
+    isMissed: Boolean(r.ismissed), cost: r.cost,
   }));
 }
 
-export async function addDailyLogEntry(entry: DailyLogEntry): Promise<void> {
-  const database = getDb();
-  database.prepare(`
-    INSERT OR REPLACE INTO daily_log 
-    (id, odid, date, eventType, mealType, source, items, exerciseType, duration, sets, reps, caloriesBurned, waterMl, timestamp, isConfirmed, isMissed, cost)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    entry.id,
-    entry.odid,
-    entry.date,
-    entry.eventType,
-    entry.mealType || null,
-    entry.source || null,
-    entry.items ? JSON.stringify(entry.items) : null,
-    entry.exerciseType || null,
-    entry.duration || null,
-    entry.sets || null,
-    entry.reps || null,
-    entry.caloriesBurned || null,
-    entry.waterMl || null,
-    entry.timestamp,
-    entry.isConfirmed ? 1 : 0,
-    entry.isMissed ? 1 : 0,
-    entry.cost || null
-  );
+export async function addDailyLogEntry(e: DailyLogEntry): Promise<void> {
+  const items = e.items ? JSON.stringify(e.items) : null;
+  await sql`
+    INSERT INTO daily_log (id, odid, date, eventtype, mealtype, source, items,
+      exercisetype, duration, sets, reps, caloriesburned, waterml, timestamp,
+      isconfirmed, ismissed, cost)
+    VALUES (${e.id}, ${e.odid}, ${e.date}, ${e.eventType}, ${e.mealType ?? null},
+      ${e.source ?? null}, ${items}, ${e.exerciseType ?? null}, ${e.duration ?? null},
+      ${e.sets ?? null}, ${e.reps ?? null}, ${e.caloriesBurned ?? null},
+      ${e.waterMl ?? null}, ${e.timestamp}, ${e.isConfirmed ? 1 : 0},
+      ${e.isMissed ? 1 : 0}, ${e.cost ?? null})
+    ON CONFLICT (id) DO UPDATE SET
+      items = EXCLUDED.items, mealtype = EXCLUDED.mealtype, source = EXCLUDED.source,
+      exercisetype = EXCLUDED.exercisetype, duration = EXCLUDED.duration,
+      sets = EXCLUDED.sets, reps = EXCLUDED.reps, caloriesburned = EXCLUDED.caloriesburned,
+      waterml = EXCLUDED.waterml, timestamp = EXCLUDED.timestamp,
+      isconfirmed = EXCLUDED.isconfirmed, ismissed = EXCLUDED.ismissed,
+      cost = EXCLUDED.cost`;
 }
 
+// ── Session State ─────────────────────────────────────────────────────────────
+
 export async function getSessionState(odid: string): Promise<SessionState | undefined> {
-  const database = getDb();
-  const row = database.prepare('SELECT * FROM session_state WHERE odid = ? ORDER BY startedAt DESC LIMIT 1').get(odid) as any;
-  if (!row) return undefined;
-  
-  return {
-    sessionId: row.sessionId,
-    odid: row.odid,
-    startedAt: row.startedAt,
-    currentState: row.currentState as BotState,
-    currentGap: JSON.parse(row.currentGap || '{}'),
-    constraintStack: JSON.parse(row.constraintStack || '[]'),
-    suggestions: JSON.parse(row.suggestions || '[]'),
-    budgetRemaining: row.budgetRemaining,
-  };
+  const rows = await sql`SELECT * FROM session_history WHERE odid = ${odid}`;
+  return undefined; // kept for interface compatibility
 }
 
 export async function saveSessionState(state: SessionState): Promise<void> {
-  const database = getDb();
-  database.prepare(`
-    INSERT OR REPLACE INTO session_state 
-    (sessionId, odid, startedAt, currentState, currentGap, constraintStack, suggestions, budgetRemaining)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    state.sessionId,
-    state.odid,
-    state.startedAt,
-    state.currentState,
-    JSON.stringify(state.currentGap),
-    JSON.stringify(state.constraintStack),
-    JSON.stringify(state.suggestions),
-    state.budgetRemaining
-  );
+  // kept for interface compatibility
 }
 
+// ── Session History (for LLM context) ────────────────────────────────────────
+
+export async function getSessionHistory(odid: string): Promise<{ role: string; content: string }[]> {
+  const rows = await sql`SELECT messages FROM session_history WHERE odid = ${odid}`;
+  if (!rows[0]) return [];
+  return JSON.parse(rows[0].messages || '[]');
+}
+
+export async function saveSessionHistory(odid: string, messages: { role: string; content: string }[]): Promise<void> {
+  const m = JSON.stringify(messages);
+  await sql`
+    INSERT INTO session_history (odid, messages, updatedat)
+    VALUES (${odid}, ${m}, ${Date.now()})
+    ON CONFLICT (odid) DO UPDATE SET messages = EXCLUDED.messages, updatedat = EXCLUDED.updatedat`;
+}
+
+// ── Onboarding State ──────────────────────────────────────────────────────────
+
+export async function getOnboardingState(odid: string): Promise<{ step: number; data: any } | null> {
+  const rows = await sql`SELECT * FROM onboarding_state WHERE odid = ${odid}`;
+  if (!rows[0]) return null;
+  return { step: rows[0].step, data: JSON.parse(rows[0].data || '{}') };
+}
+
+export async function saveOnboardingState(odid: string, state: { step: number; data: any }): Promise<void> {
+  const d = JSON.stringify(state.data);
+  await sql`
+    INSERT INTO onboarding_state (odid, step, data) VALUES (${odid}, ${state.step}, ${d})
+    ON CONFLICT (odid) DO UPDATE SET step = EXCLUDED.step, data = EXCLUDED.data`;
+}
+
+export async function deleteOnboardingState(odid: string): Promise<void> {
+  await sql`DELETE FROM onboarding_state WHERE odid = ${odid}`;
+}
+
+// ── Canteen Items ─────────────────────────────────────────────────────────────
+
 export async function getCanteenItems(): Promise<CanteenItem[]> {
-  const database = getDb();
-  const rows = database.prepare('SELECT * FROM canteen_items').all() as any[];
-  return rows.map(row => ({
-    id: row.id,
-    name: row.name,
-    category: row.category,
-    baseMacros: JSON.parse(row.baseMacros),
-    adjustedMacros: JSON.parse(row.adjustedMacros),
-    price: row.price,
-    isVeg: Boolean(row.isVeg),
-    temperature: row.temperature,
+  const rows = await sql`SELECT * FROM canteen_items`;
+  return rows.map(r => ({
+    id: r.id, name: r.name, category: r.category,
+    baseMacros: JSON.parse(r.basemacros),
+    adjustedMacros: JSON.parse(r.adjustedmacros),
+    price: r.price, isVeg: Boolean(r.isveg), temperature: r.temperature,
   }));
 }
 
 export async function saveCanteenItems(items: CanteenItem[]): Promise<void> {
-  const database = getDb();
-  const insert = database.prepare(`
-    INSERT OR REPLACE INTO canteen_items (id, name, category, baseMacros, adjustedMacros, price, isVeg, temperature)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
   for (const item of items) {
-    insert.run(
-      item.id,
-      item.name,
-      item.category,
-      JSON.stringify(item.baseMacros),
-      JSON.stringify(item.adjustedMacros),
-      item.price,
-      item.isVeg ? 1 : 0,
-      item.temperature || null
-    );
+    const bm = JSON.stringify(item.baseMacros);
+    const am = JSON.stringify(item.adjustedMacros);
+    await sql`
+      INSERT INTO canteen_items (id, name, category, basemacros, adjustedmacros, price, isveg, temperature)
+      VALUES (${item.id}, ${item.name}, ${item.category}, ${bm}, ${am},
+        ${item.price}, ${item.isVeg ? 1 : 0}, ${item.temperature ?? null})
+      ON CONFLICT (id) DO NOTHING`;
   }
 }
 
+// ── Mess Menu ─────────────────────────────────────────────────────────────────
+
 export async function getMessMenu(dayOfWeek: number): Promise<MessMenuItem[]> {
-  const database = getDb();
-  const rows = database.prepare('SELECT * FROM mess_menu WHERE dayOfWeek = ?').all(dayOfWeek) as any[];
-  return rows.map(row => ({
-    id: row.id,
-    dayOfWeek: row.dayOfWeek,
-    mealType: row.mealType,
-    items: JSON.parse(row.items),
-    estimatedMacros: JSON.parse(row.estimatedMacros),
+  const rows = await sql`SELECT * FROM mess_menu WHERE dayofweek = ${dayOfWeek}`;
+  return rows.map(r => ({
+    id: r.id, dayOfWeek: r.dayofweek, mealType: r.mealtype,
+    items: JSON.parse(r.items), estimatedMacros: JSON.parse(r.estimatedmacros),
   }));
 }
 
 export async function saveMessMenu(items: MessMenuItem[]): Promise<void> {
-  const database = getDb();
-  const insert = database.prepare(`
-    INSERT OR REPLACE INTO mess_menu (id, dayOfWeek, mealType, items, estimatedMacros)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  
   for (const item of items) {
-    insert.run(
-      item.id,
-      item.dayOfWeek,
-      item.mealType,
-      JSON.stringify(item.items),
-      JSON.stringify(item.estimatedMacros)
-    );
+    const it = JSON.stringify(item.items);
+    const em = JSON.stringify(item.estimatedMacros);
+    await sql`
+      INSERT INTO mess_menu (id, dayofweek, mealtype, items, estimatedmacros)
+      VALUES (${item.id}, ${item.dayOfWeek}, ${item.mealType}, ${it}, ${em})
+      ON CONFLICT (id) DO NOTHING`;
   }
 }
 
-export async function getVendorItems(): Promise<VendorItem[]> {
-  const database = getDb();
-  const rows = database.prepare('SELECT * FROM vendor_items').all() as any[];
-  return rows.map(row => ({
-    id: row.id,
-    name: row.name,
-    location: row.location,
-    category: row.category,
-    macros: JSON.parse(row.macros),
-    priceRange: JSON.parse(row.priceRange),
-    isVeg: Boolean(row.isVeg),
-    temperature: row.temperature,
-  }));
-}
+// ── Vendor Items ──────────────────────────────────────────────────────────────
 
 export async function saveVendorItems(items: VendorItem[]): Promise<void> {
-  const database = getDb();
-  const insert = database.prepare(`
-    INSERT OR REPLACE INTO vendor_items (id, name, location, category, macros, priceRange, isVeg, temperature)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
   for (const item of items) {
-    insert.run(
-      item.id,
-      item.name,
-      item.location,
-      item.category,
-      JSON.stringify(item.macros),
-      JSON.stringify(item.priceRange),
-      item.isVeg ? 1 : 0,
-      item.temperature || null
-    );
+    const m = JSON.stringify(item.macros);
+    const pr = JSON.stringify(item.priceRange);
+    await sql`
+      INSERT INTO vendor_items (id, name, location, category, macros, pricerange, isveg, temperature)
+      VALUES (${item.id}, ${item.name}, ${item.location}, ${item.category}, ${m}, ${pr},
+        ${item.isVeg ? 1 : 0}, ${item.temperature ?? null})
+      ON CONFLICT (id) DO NOTHING`;
   }
 }

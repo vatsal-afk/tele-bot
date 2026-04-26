@@ -1,0 +1,22 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { webhookCallback } from 'grammy';
+import dotenv from 'dotenv';
+dotenv.config();
+
+// Dynamic import so the bot module initialises fresh per cold-start
+import { bot } from '../src/bot/index.js';
+
+const handleUpdate = webhookCallback(bot, 'express');
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'POST') {
+    try {
+      await handleUpdate(req as any, res as any);
+    } catch (err) {
+      console.error('Webhook error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  } else {
+    res.status(200).json({ status: 'IITR Fitness Bot is live ✅' });
+  }
+}
