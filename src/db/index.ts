@@ -107,7 +107,7 @@ export interface VendorItem {
 export async function initDB(): Promise<Database.Database> {
   if (db) return db;
   
-  const dbPath = path.resolve('./data.db');
+  const dbPath = process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.resolve('./data.db');
   db = new Database(dbPath);
   
   db.exec(`
