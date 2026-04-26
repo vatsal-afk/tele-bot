@@ -17,7 +17,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await handleUpdate(req as any, res as any);
     } catch (err) {
       console.error('Webhook error:', err);
-      res.status(500).json({ error: 'Internal server error' });
+      res.status(500).json({ error: 'Internal server error', details: err instanceof Error ? err.message : String(err) });
     }
   } else {
     res.status(200).json({ status: 'IITR Fitness Bot is live ✅' });
