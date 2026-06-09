@@ -622,31 +622,35 @@ Provide a concise 2-3 sentence summary and ONE actionable suggestion for the com
 // ── Mess menu image OCR via Groq Vision ─────────────────────────
 
 const MENU_PARSE_PROMPT = `You are an expert OCR scanner for Indian hostel mess menus.
-Extract the weekly meal schedule from the provided content.
-Return ONLY a valid JSON array (no markdown, no backticks, no intro text):
-[
-  {
-    "dayOfWeek": 0,
-    "breakfast": ["Poha", "Chai"],
-    "lunch": ["Rajma Chawal", "Salad"],
-    "dinner": ["Paneer Bhurji", "Roti"]
-  }
-]
-dayOfWeek: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.
+Extract the weekly meal schedule from the provided image.
+Return ONLY a valid JSON object matching this exact structure:
+{
+  "schedule": [
+    {
+      "dayOfWeek": 0,
+      "breakfast": ["Poha", "Chai"],
+      "lunch": ["Rajma Chawal", "Salad"],
+      "dinner": ["Paneer Bhurji", "Roti"]
+    }
+  ]
+}
+dayOfWeek MUST be an integer: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.
 Rules:
-1. Use clean English food names (e.g. "Aloo Gobhi", "Dal Makhani", "Roti").
+1. Translate typical Hindi/Indian mess dishes correctly into clean English items (e.g. "Aloo Gobhi", "Dal Makhani", "Roti").
 2. Exclude hostel names, dates, signatures.
-3. Return ONLY the JSON array.`;
+3. Return ONLY the JSON object. No other text.`;
 
 export async function parseMessMenuFromImage(imageUrl: string): Promise<any> {
   try {
     const response = await fetch(imageUrl);
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    // Telegram sometimes gives generic content types, let's force image/jpeg if it's not clear
+    let contentType = response.headers.get('content-type') || 'image/jpeg';
+    if (!contentType.startsWith('image/')) contentType = 'image/jpeg';
 
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.2-11b-vision-preview',
+      model: 'llama-3.2-90b-vision-preview',
       messages: [
         {
           role: 'user',
@@ -657,14 +661,15 @@ export async function parseMessMenuFromImage(imageUrl: string): Promise<any> {
         }
       ],
       temperature: 0.1,
-      max_tokens: 2000
+      max_tokens: 4000,
+      response_format: { type: 'json_object' }
     });
 
-    const content = completion.choices[0]?.message?.content || '';
-    console.log('[groq-vision] raw output:', content.slice(0, 300));
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]);
+    const content = completion.choices[0]?.message?.content || '{}';
+    console.log('[groq-vision] output parsed successfully');
+    
+    const parsed = JSON.parse(content);
+    return parsed.schedule || [];
   } catch (e) {
     console.error('[groq-vision] error:', e);
     return null;
@@ -674,19 +679,19 @@ export async function parseMessMenuFromImage(imageUrl: string): Promise<any> {
 export async function parseMessMenuFromText(text: string): Promise<any> {
   try {
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         { role: 'system', content: MENU_PARSE_PROMPT },
         { role: 'user', content: text }
       ],
       temperature: 0.1,
-      max_tokens: 1500
+      max_tokens: 2000,
+      response_format: { type: 'json_object' }
     });
 
-    const content = completion.choices[0]?.message?.content || '';
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]);
+    const content = completion.choices[0]?.message?.content || '{}';
+    const parsed = JSON.parse(content);
+    return parsed.schedule || [];
   } catch (e) {
     console.error('[groq-text-parse] error:', e);
     return null;
