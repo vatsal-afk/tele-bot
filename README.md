@@ -52,21 +52,6 @@ Built on **Telegram**, powered by **Groq LLaMA**, backed by **Neon PostgreSQL**,
 
 ---
 
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Bot framework | [GrammY](https://grammy.dev) |
-| LLM | [Groq](https://groq.com) — LLaMA 3.3 70B (chat) + LLaMA 3.1 8B (classification) |
-| Database | [Neon](https://neon.tech) serverless PostgreSQL + [Drizzle ORM](https://orm.drizzle.team) |
-| Web search | [Tavily API](https://tavily.com) |
-| Brand lookup | [Open Food Facts](https://world.openfoodfacts.org) |
-| Weather | [Open-Meteo](https://open-meteo.com) (no key needed) |
-| Deployment | [Vercel](https://vercel.com) (webhook) |
-| Notifications | GitHub Actions cron (every 5 min) |
-
----
-
 ## Setup
 
 ### 1. Clone & Install

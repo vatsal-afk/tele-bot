@@ -52,10 +52,21 @@ bot.command('start', async (ctx) => {
   console.log('Fetching user profile for', odid);
   const profile = await getUserProfile(odid);
   console.log('Profile fetched:', !!profile);
-  
   if (!profile || !profile.isOnboarded) {
     await saveOnboardingState(odid, { step: 0, data: { odid } });
-    await ctx.reply("Welcome to IITR Hostel Fitness Tracker! 🚀\n\nTo set up your personalized ICMR-NIN targets, please tell me your details in one message.\n\nFor example: \"I am 21 years old, 65kg, 170cm, male. I am moderately active, vegetarian, and want to gain muscle. My daily budget is 150 Rs.\"");
+    await ctx.reply(
+      "🤖 *Welcome to BhawanBuddy!* 🚀\n\n" +
+      "I am your private, AI-powered fitness and routine companion designed specifically for IIT Roorkee hostel life.\n\n" +
+      "Here is what I can do for you:\n" +
+      "• 🍽️ *Smart Nutrition:* Local mess & canteen menu lookup + brand analysis + web recipe fallback\n" +
+      "• 🌡️ *Routine-Aware:* Weather-triggered hydration alerts aligned to your class timetable\n" +
+      "• 💰 *Budget-Friendly:* Suggests healthy canteen alternatives within your daily budget limit\n\n" +
+      "---\n" +
+      "📝 *First step:* Let's set up your personalized **ICMR-NIN nutrition targets**.\n" +
+      "Just send me your details in a single message. For example:\n\n" +
+      `_"I am 21 years old, 65kg, 165cm, male. I am moderately active, vegetarian, and want to gain muscle. My daily budget is 150 Rs."_`,
+      { parse_mode: 'Markdown' }
+    );
   } else {
     await showDashboard(ctx, odid);
   }
