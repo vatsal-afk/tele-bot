@@ -518,7 +518,8 @@ bot.on('message:text', async (ctx, next) => {
       const addedCarbs = newItems.reduce((s, i) => s + (i.macros?.carbs || 0), 0);
       const addedFats = newItems.reduce((s, i) => s + (i.macros?.fats || 0), 0);
 
-      let reply = existingMeal ? `Added to ${mealType}: ${newItems.map(i => i.name).join(', ')}\n` : `Logged ${mealType}: ${foodNames}\n`;
+      const resolvedNames = finalItems.length > 0 ? finalItems.map((i: any) => i.name).join(', ') : foodNames;
+      let reply = existingMeal ? `✅ Added to ${mealType}: ${newItems.map(i => i.name).join(', ')}\n` : `✅ Logged ${mealType}: ${resolvedNames}\n`;
       if (addedCal > 0) {
         reply += `${Math.round(addedCal)} kcal | ${Math.round(addedProt)}g protein\n`;
         reply += `${Math.round(addedCarbs)}g carbs | ${Math.round(addedFats)}g fats\n`;
@@ -655,7 +656,7 @@ bot.on('message:text', async (ctx, next) => {
         todayMealsLogged: mealsLogged,
         recentHistory: history,
       });
-      await ctx.reply(reply);
+      await ctx.reply(reply, { parse_mode: 'Markdown' });
       await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
       break;
     }
