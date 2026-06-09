@@ -272,7 +272,7 @@ async function sendWeeklySummary(ctx: Context, odid: string) {
         0
       );
     } else {
-      reflection = `🥩 Protein: ${avgProtein}g / ${targets.protein || 60}g\n🔥 Calories: ${avgCalories} / ${targets.calories || 2000}kcal\n💰 Spend: ₹${totalSpend} / ₹${weeklyBudget}`;
+      reflection = `Protein: ${avgProtein}g / ${targets.protein || 60}g\n🔥 Calories: ${avgCalories} / ${targets.calories || 2000}kcal\n💰 Spend: ₹${totalSpend} / ₹${weeklyBudget}`;
     }
   } catch {
     reflection = `Protein: ${avgProtein}g / ${targets.protein || 60}g\nCalories: ${avgCalories} / ${targets.calories || 2000}kcal\nSpend: ₹${totalSpend} / ₹${weeklyBudget}`;
@@ -281,11 +281,13 @@ async function sendWeeklySummary(ctx: Context, odid: string) {
   await ctx.reply(reflection);
 }
 
-bot.on('message:text', async (ctx) => {
+bot.on('message:text', async (ctx, next) => {
   const message = ctx.message?.text;
   const userId = ctx.from?.id.toString();
   
   if (!message || !userId) return;
+  if (message.startsWith('/')) return next(); // Let command handlers process this
+
   
   await ensureDB();
   
@@ -378,8 +380,35 @@ bot.on('message:text', async (ctx) => {
 
       // Look up each food item: local DB → cache → brand → web search → LLM estimate → ask user
       let matchedItems: any[] = [];
-      if (intent.foodItems && intent.foodItems.length > 0) {
-        for (const foodName of intent.foodItems) {
+      let foodItemsToProcess = intent.foodItems || [];
+
+      // If user just says "mess breakfast" / "lunch in mess", auto-resolve to today's menu
+      if (source === 'mess') {
+        const isGeneric = foodItemsToProcess.length === 0 || 
+                          foodItemsToProcess.every(f => f.toLowerCase().includes('mess') || f.toLowerCase().includes(mealType));
+        if (isGeneric) {
+          // If it's before 4 AM IST, the logical "mess day" is yesterday
+          const now = new Date();
+          const timeFormatter = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', hour12: false });
+          const currentHourIST = parseInt(timeFormatter.format(now));
+          if (currentHourIST < 4) {
+            now.setDate(now.getDate() - 1);
+          }
+          const jsDay = now.getDay();
+          const dbDay = jsDay === 0 ? 6 : jsDay - 1;
+          
+          const todayMenu = await getMessMenu(dbDay);
+          const mealMenu = todayMenu.find(m => m.mealType.toLowerCase() === mealType);
+          
+          if (mealMenu && mealMenu.items.length > 0) {
+            foodItemsToProcess = mealMenu.items;
+            await ctx.reply(`🍽️ Automatically fetching mess ${mealType} menu: *${foodItemsToProcess.join(', ')}*`, { parse_mode: 'Markdown' });
+          }
+        }
+      }
+
+      if (foodItemsToProcess.length > 0) {
+        for (const foodName of foodItemsToProcess) {
           const qty = qtyMap.get(foodName.toLowerCase()) || 1;
 
           // Step 1: local Indian food DB (high confidence, instant)
