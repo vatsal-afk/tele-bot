@@ -6,7 +6,7 @@ import { initDB, getUserProfile, saveUserProfile, getDailyLog, addDailyLogEntry,
 import { computeICMRTargets } from '../utils/icmr.js';
 import { getNutritionalGap } from '../utils/icmr.js';
 import { rankItems, generateSuggestion, checkBudgetAndSuggestAlternative, formatSuggestionMessage, calculateCaloriesBurned, type Constraint } from '../services/gapFiller.js';
-import { checkGroqHealth, classifyIntent, generateConversationalReply, generateWeeklyReflection, lookupFoodMacros, searchAndResolveFoodMacros } from '../services/groq.js';
+import { checkGroqHealth, classifyIntent, generateConversationalReply, generateWeeklyReflection, lookupFoodMacros, searchAndResolveFoodMacros, parseMessMenuFromImage, parseMessMenuFromText } from '../services/groq.js';
 import { formatGapSummary } from '../utils/icmr.js';
 import { loadCanteenItems, loadMessSchedule, loadVendorLibrary } from '../db/knowledge.js';
 import { lookupOpenFoodFacts, estimateBrandMacrosFromWeb, isLikelyBrandedProduct } from '../services/brandLookup.js';
@@ -42,7 +42,7 @@ bot.command('start', async (ctx) => {
   await ensureDB();
   console.log('DB ensured');
   const odid = ctx.from?.id.toString();
-  
+
   if (!odid) {
     console.log('No user ID found');
     await ctx.reply('Unable to identify user. Please try again.');
@@ -78,10 +78,10 @@ async function showDashboard(ctx: Context, odid: string) {
 
   const today = new Date().toISOString().split('T')[0];
   const todayLog = await getDailyLog(odid, today);
-  
+
   const loggedCalories = todayLog.reduce((sum, e) => sum + (e.items?.reduce((s, i: any) => s + (i.macros?.calories || 0), 0) || 0), 0);
   const loggedProtein = todayLog.reduce((sum, e) => sum + (e.items?.reduce((s, i: any) => s + (i.macros?.protein || 0), 0) || 0), 0);
-  
+
   const totalSpent = todayLog.reduce((sum, e) => sum + (e.cost || 0), 0);
   const remainingBudget = profile.dailyBudget - totalSpent;
   const targets = profile.targets as any;
@@ -108,9 +108,9 @@ bot.on('callback_query:data', async (ctx) => {
   const callback = ctx.callbackQuery;
   const data = callback.data;
   const userId = callback.from.id.toString();
-  
+
   await ensureDB();
-  
+
   if (data === 'action:meal') {
     await ctx.reply('What would you like to log?', {
       reply_markup: new InlineKeyboard()
@@ -136,12 +136,12 @@ bot.on('callback_query:data', async (ctx) => {
   } else if (data === 'action:budget') {
     const profile = await getUserProfile(userId);
     if (!profile) return;
-    
+
     const today = new Date().toISOString().split('T')[0];
     const todayLog = await getDailyLog(userId, today);
     const totalSpent = todayLog.reduce((sum, e) => sum + (e.cost || 0), 0);
     const remaining = profile.dailyBudget - totalSpent;
-    
+
     await ctx.reply(`💰 Budget\n\nSpent: ₹${totalSpent}\nRemaining: ₹${remaining}\nBudget: ₹${profile.dailyBudget}`);
   } else if (data === 'action:weekly') {
     await sendWeeklySummary(ctx, userId);
@@ -153,7 +153,7 @@ bot.on('callback_query:data', async (ctx) => {
       reply_markup: new InlineKeyboard()
         .text('📋 Canteen Menu', 'canteen:list'),
     });
-    
+
     const entry = {
       id: uuidv4(),
       odid: userId,
@@ -166,7 +166,7 @@ bot.on('callback_query:data', async (ctx) => {
       isConfirmed: true,
       isMissed: false,
     };
-    
+
     await addDailyLogEntry(entry);
     await ctx.answerCallbackQuery('Meal logged!');
   } else if (data.startsWith('exercise:')) {
@@ -190,7 +190,7 @@ bot.on('callback_query:data', async (ctx) => {
       isConfirmed: true,
       isMissed: false,
     };
-    
+
     await addDailyLogEntry(entry);
     await ctx.answerCallbackQuery(`Logged ${amount}ml water!`);
     await showDashboard(ctx, userId);
@@ -208,7 +208,7 @@ bot.on('callback_query:data', async (ctx) => {
       isConfirmed: true,
       isMissed: false,
     };
-    
+
     await addDailyLogEntry(entry);
     await ctx.answerCallbackQuery(`Logged ${duration}min exercise!`);
     await showDashboard(ctx, userId);
@@ -225,15 +225,15 @@ bot.on('callback_query:data', async (ctx) => {
   } else if (data === 'canteen:list') {
     const items = await getCanteenItems();
     const topItems = items.slice(0, 15);
-    
+
     let msg = '📋 Canteen Menu (Prices with 1.2x fat adjustment)\n\n';
     for (const item of topItems) {
       msg += `${item.name} - ₹${item.price}\n`;
     }
-    
+
     await ctx.reply(msg);
   }
-  
+
   await ctx.answerCallbackQuery();
 });
 
@@ -245,9 +245,9 @@ async function sendWeeklySummary(ctx: Context, odid: string) {
   weekAgo.setDate(weekAgo.getDate() - 7);
   const weekAgoStr = weekAgo.toISOString().split('T')[0];
   const today = new Date().toISOString().split('T')[0];
-  
+
   let totalProtein = 0, totalCalories = 0, totalSpend = 0, days = 0;
-  
+
   for (let d = new Date(weekAgo); d <= new Date(today); d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().split('T')[0];
     const log = await getDailyLog(odid, dateStr);
@@ -258,17 +258,17 @@ async function sendWeeklySummary(ctx: Context, odid: string) {
       days++;
     }
   }
-  
+
   if (days === 0) {
     await ctx.reply('No data for this week yet.');
     return;
   }
-  
+
   const avgProtein = Math.round(totalProtein / days);
   const avgCalories = Math.round(totalCalories / days);
   const weeklyBudget = profile.dailyBudget * 7;
   const targets = profile.targets as any;
-  
+
   let reflection: string;
   try {
     const groqAvailable = await checkGroqHealth();
@@ -288,20 +288,20 @@ async function sendWeeklySummary(ctx: Context, odid: string) {
   } catch {
     reflection = `Protein: ${avgProtein}g / ${targets.protein || 60}g\nCalories: ${avgCalories} / ${targets.calories || 2000}kcal\nSpend: ₹${totalSpend} / ₹${weeklyBudget}`;
   }
-  
+
   await ctx.reply(reflection);
 }
 
 bot.on('message:text', async (ctx, next) => {
   const message = ctx.message?.text;
   const userId = ctx.from?.id.toString();
-  
+
   if (!message || !userId) return;
   if (message.startsWith('/')) return next(); // Let command handlers process this
 
-  
+
   await ensureDB();
-  
+
   // Handle onboarding
   const onBoarding = await getOnboardingState(userId);
   if (onBoarding) {
@@ -313,12 +313,12 @@ bot.on('message:text', async (ctx, next) => {
     if (intent.intent === 'complete_onboarding' && intent.onboardingProfile) {
       const data = intent.onboardingProfile;
       console.log('Saving profile with extracted data:', JSON.stringify(data));
-      
+
       const targets = computeICMRTargets({
         weight: data.weight, height: data.height, age: data.age,
         sex: data.sex, activityLevel: data.activityLevel, fitnessGoal: data.fitnessGoal,
       });
-      
+
       const newProfile = {
         odid: userId, createdAt: Date.now(), age: data.age, height: data.height,
         weight: data.weight, sex: data.sex, activityLevel: data.activityLevel,
@@ -328,10 +328,10 @@ bot.on('message:text', async (ctx, next) => {
         notifications: { breakfast: '08:30', lunch: '12:30', dinner: '19:30', customReminders: [] },
         targets, isOnboarded: true,
       };
-      
+
       await saveUserProfile(newProfile);
       await deleteOnboardingState(userId);
-      
+
       await ctx.reply('🎉 Onboarding complete! Your daily targets:\n' +
         `🔥 Calories: ${Math.round(targets.calories)}kcal\n🥩 Protein: ${Math.round(targets.protein)}g\n💧 Water: ${Math.round(targets.waterMl)}ml`);
       await showDashboard(ctx, userId);
@@ -340,7 +340,7 @@ bot.on('message:text', async (ctx, next) => {
     }
     return;
   }
-  
+
   // ── Post-onboarding: Intelligent NLU routing ──
   const profile = await getUserProfile(userId);
   if (!profile) {
@@ -395,8 +395,8 @@ bot.on('message:text', async (ctx, next) => {
 
       // If user just says "mess breakfast" / "lunch in mess", auto-resolve to today's menu
       if (source === 'mess') {
-        const isGeneric = foodItemsToProcess.length === 0 || 
-                          foodItemsToProcess.every(f => f.toLowerCase().includes('mess') || f.toLowerCase().includes(mealType));
+        const isGeneric = foodItemsToProcess.length === 0 ||
+          foodItemsToProcess.every(f => f.toLowerCase().includes('mess') || f.toLowerCase().includes(mealType));
         if (isGeneric) {
           // If it's before 4 AM IST, the logical "mess day" is yesterday
           const now = new Date();
@@ -407,10 +407,10 @@ bot.on('message:text', async (ctx, next) => {
           }
           const jsDay = now.getDay();
           const dbDay = jsDay === 0 ? 6 : jsDay - 1;
-          
+
           const todayMenu = await getMessMenu(dbDay);
           const mealMenu = todayMenu.find(m => m.mealType.toLowerCase() === mealType);
-          
+
           if (mealMenu && mealMenu.items.length > 0) {
             foodItemsToProcess = mealMenu.items;
             await ctx.reply(`🍽️ Automatically fetching mess ${mealType} menu: *${foodItemsToProcess.join(', ')}*`, { parse_mode: 'Markdown' });
@@ -480,27 +480,27 @@ bot.on('message:text', async (ctx, next) => {
       }
 
       const existingMeal = todayLog.find(e => e.eventType === 'meal' && e.mealType === mealType);
-      
+
       let newItems = matchedItems;
       let finalItems = matchedItems.length > 0 ? matchedItems : [];
       let finalCost = intent.cost || 0;
       let finalId = uuidv4();
-      
+
       if (existingMeal) {
-         finalId = existingMeal.id; // use the same ID so it replaces via INSERT OR REPLACE
-         
-         // Avoid logging the exact same item twice in the same meal
-         const existingItemNames = new Set((existingMeal.items || []).map((i: any) => i.name.toLowerCase()));
-         newItems = matchedItems.filter(i => !existingItemNames.has(i.name.toLowerCase()));
-         
-         finalItems = [...(existingMeal.items || []), ...newItems];
-         finalCost = (existingMeal.cost || 0) + (intent.cost || 0);
+        finalId = existingMeal.id; // use the same ID so it replaces via INSERT OR REPLACE
+
+        // Avoid logging the exact same item twice in the same meal
+        const existingItemNames = new Set((existingMeal.items || []).map((i: any) => i.name.toLowerCase()));
+        newItems = matchedItems.filter(i => !existingItemNames.has(i.name.toLowerCase()));
+
+        finalItems = [...(existingMeal.items || []), ...newItems];
+        finalCost = (existingMeal.cost || 0) + (intent.cost || 0);
       }
 
       if (existingMeal && newItems.length === 0 && !intent.cost) {
         // Nothing new to add, probably conversational follow-up
         await ctx.reply(`You've already logged ${foodNames} for ${mealType}! Keep up the good work. 💪`);
-        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: `You've already logged ${foodNames} for ${mealType}!`}]);
+        await saveSessionHistory(userId, [...history.slice(-5), { role: 'user', content: message }, { role: 'assistant', content: `You've already logged ${foodNames} for ${mealType}!` }]);
         break;
       }
 
@@ -533,9 +533,9 @@ bot.on('message:text', async (ctx, next) => {
         }
       }
       if (intent.cost) reply += `Cost: ₹${intent.cost}\n`;
-      
+
       await ctx.reply(reply);
-      await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
+      await saveSessionHistory(userId, [...history.slice(-5), { role: 'user', content: message }, { role: 'assistant', content: reply }]);
       break;
     }
 
@@ -605,7 +605,7 @@ bot.on('message:text', async (ctx, next) => {
           reply_markup: new InlineKeyboard()
             .text(`✅ ${check.alternative.itemName}`, `accept:${check.alternative.itemName}`),
         });
-        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: check.message || 'Budget exceeded'}]);
+        await saveSessionHistory(userId, [...history.slice(-5), { role: 'user', content: message }, { role: 'assistant', content: check.message || 'Budget exceeded' }]);
       } else {
         const suggestion = generateSuggestion(topItem, gap);
         const suggestionMsg = formatSuggestionMessage(suggestion);
@@ -614,7 +614,7 @@ bot.on('message:text', async (ctx, next) => {
             .text('✅ Log This', `accept:${topItem.itemName}`)
             .text('❌ Something Else', `reject:${topItem.itemName}`),
         });
-        await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: suggestionMsg}]);
+        await saveSessionHistory(userId, [...history.slice(-5), { role: 'user', content: message }, { role: 'assistant', content: suggestionMsg }]);
       }
       break;
     }
@@ -657,7 +657,7 @@ bot.on('message:text', async (ctx, next) => {
         recentHistory: history,
       });
       await ctx.reply(reply, { parse_mode: 'Markdown' });
-      await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: reply}]);
+      await saveSessionHistory(userId, [...history.slice(-5), { role: 'user', content: message }, { role: 'assistant', content: reply }]);
       break;
     }
   }
@@ -666,10 +666,69 @@ bot.on('message:text', async (ctx, next) => {
 bot.on('message:photo', async (ctx) => {
   const userId = ctx.from?.id.toString();
   if (!userId) return;
+
+  await ensureDB();
+  const photo = ctx.message?.photo;
+  if (!photo || photo.length === 0) return;
+
+  // Check if caption contains /messmenu — if so, parse as mess menu
+  const caption = (ctx.message?.caption || '').toLowerCase();
+  if (caption.includes('messmenu') || caption.includes('mess menu') || caption.includes('menu')) {
+    await ctx.reply('🔮 *Scanning mess menu with AI Vision...* This may take a few seconds.', { parse_mode: 'Markdown' });
+    try {
+      const fileId = photo[photo.length - 1].file_id;
+      const file = await ctx.api.getFile(fileId);
+      const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+      const parsedMenu = await parseMessMenuFromImage(fileUrl);
+      if (!parsedMenu || !Array.isArray(parsedMenu) || parsedMenu.length === 0) {
+        await ctx.reply('❌ Could not parse the menu from this image. Try a clearer photo, or paste the menu as text with `/messmenu Mon: Poha | Rajma | Paneer`', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      const dbItems = [];
+      for (const day of parsedMenu) {
+        if (day.dayOfWeek === undefined) continue;
+        for (const mealType of ['breakfast', 'lunch', 'dinner']) {
+          const items = day[mealType] || [];
+          if (items.length > 0) {
+            dbItems.push({
+              id: `${day.dayOfWeek}-${mealType}`,
+              dayOfWeek: day.dayOfWeek,
+              mealType,
+              items,
+              estimatedMacros: { calories: 0, protein: 0, carbs: 0, fats: 0 }
+            });
+          }
+        }
+      }
+
+      await saveMessMenu(dbItems);
+
+      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      let summary = '✅ *Mess Menu Parsed & Saved!* 🍽️\n\n';
+      for (const day of parsedMenu) {
+        if (day.dayOfWeek !== undefined) {
+          summary += `*${days[day.dayOfWeek]}*:\n`;
+          if (day.breakfast?.length) summary += `  ☕ ${day.breakfast.join(', ')}\n`;
+          if (day.lunch?.length) summary += `  🍱 ${day.lunch.join(', ')}\n`;
+          if (day.dinner?.length) summary += `  🌙 ${day.dinner.join(', ')}\n`;
+          summary += '\n';
+        }
+      }
+      await ctx.reply(summary, { parse_mode: 'Markdown' });
+    } catch (e) {
+      console.error('[messmenu-photo] error:', e);
+      await ctx.reply('❌ Error processing the image. Please try again or paste the menu as text.');
+    }
+    return;
+  }
+
+  // Generic photo — not a mess menu
   await ctx.reply(
-    '📸 Got your photo! What is this?\n\n' +
-    '• _Send /messmenu to update this week\'s mess menu_\n' +
-    '• _Or just tell me what you ate and I\'ll log it!_',
+    '📸 Got your photo!\n\n' +
+    '• To update the mess menu, send a photo with the caption *menu*\n' +
+    '• Or just tell me what you ate and I\'ll log it!',
     { parse_mode: 'Markdown' }
   );
 });
@@ -677,21 +736,64 @@ bot.on('message:photo', async (ctx) => {
 bot.command('messmenu', async (ctx) => {
   const userId = ctx.from?.id.toString();
   if (!userId) return;
+  await ensureDB();
+
   const text = ctx.message?.text?.replace('/messmenu', '').trim();
   if (!text) {
     await ctx.reply(
       '📋 *Update Mess Menu*\n\n' +
-      'You can update the mess menu any time — just send the week\'s schedule as text after the command.\n\n' +
-      '*Format:*\n`/messmenu Mon: Poha, Jalebi, Chai | Rajma Rice, Salad | Dal Tadka, Roti, Rice`\n\n' +
-      'Each day separated by newline, meals separated by `|` (breakfast | lunch | dinner).\n\n' +
-      'Or just upload a *photo* of the menu board and type /messmenu right after!',
+      '*Option 1 — Photo:* Send a photo of the menu board with the caption `menu`\n' +
+      '*Option 2 — Text:* Type the schedule after the command:\n\n' +
+      '`/messmenu Mon: Poha, Tea | Rajma Rice | Dal Roti`\n\n' +
+      'I\'ll parse it, save it, and use it for your daily meal tracking!',
       { parse_mode: 'Markdown' }
     );
     return;
   }
-  // Parse and save the mess menu text
-  await ctx.reply('✅ Got it! Mess menu updated. I\'ll use this for your meal notifications this week. 🍽️');
-  // TODO: wire to Groq vision parsing when photo + /messmenu is sent together
+
+  await ctx.reply('🔮 *Parsing your mess menu...*', { parse_mode: 'Markdown' });
+  try {
+    const parsed = await parseMessMenuFromText(text);
+    if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+      await ctx.reply('❌ Could not parse that text. Try: `/messmenu Mon: Poha, Tea | Rajma Rice | Dal Roti`', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const dbItems = [];
+    for (const day of parsed) {
+      if (day.dayOfWeek === undefined) continue;
+      for (const mealType of ['breakfast', 'lunch', 'dinner']) {
+        const items = day[mealType] || [];
+        if (items.length > 0) {
+          dbItems.push({
+            id: `${day.dayOfWeek}-${mealType}`,
+            dayOfWeek: day.dayOfWeek,
+            mealType,
+            items,
+            estimatedMacros: { calories: 0, protein: 0, carbs: 0, fats: 0 }
+          });
+        }
+      }
+    }
+
+    await saveMessMenu(dbItems);
+
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    let summary = '✅ *Mess Menu Saved!* 🍽️\n\n';
+    for (const day of parsed) {
+      if (day.dayOfWeek !== undefined) {
+        summary += `*${days[day.dayOfWeek]}*:\n`;
+        if (day.breakfast?.length) summary += `  ☕ ${day.breakfast.join(', ')}\n`;
+        if (day.lunch?.length) summary += `  🍱 ${day.lunch.join(', ')}\n`;
+        if (day.dinner?.length) summary += `  🌙 ${day.dinner.join(', ')}\n`;
+        summary += '\n';
+      }
+    }
+    await ctx.reply(summary, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error('[messmenu-text] error:', e);
+    await ctx.reply('❌ Error parsing the menu text. Please try again.');
+  }
 });
 
 bot.command('dashboard', async (ctx) => {
@@ -716,15 +818,15 @@ bot.command('weekly', async (ctx) => {
 bot.command('budget', async (ctx) => {
   const userId = ctx.from?.id.toString();
   if (!userId) return;
-  
+
   const profile = await getUserProfile(userId);
   if (!profile) return;
-  
+
   const today = new Date().toISOString().split('T')[0];
   const todayLog = await getDailyLog(userId, today);
   const totalSpent = todayLog.reduce((sum, e) => sum + (e.cost || 0), 0);
   const remaining = profile.dailyBudget - totalSpent;
-  
+
   await ctx.reply(`💰 Budget\n\nSpent: ₹${totalSpent}\nRemaining: ₹${remaining}\nDaily: ₹${profile.dailyBudget}`);
 });
 
@@ -772,7 +874,7 @@ function startNotificationJob() {
   setInterval(async () => {
     try {
       if (!dbInitialized) return;
-      
+
       const now = new Date();
       const timeFormatter = new Intl.DateTimeFormat('en-IN', {
         timeZone: 'Asia/Kolkata',
@@ -806,7 +908,7 @@ function startNotificationJob() {
 
         for (const meal of mealsToProcess) {
           if (!meal.time) continue;
-          
+
           const [hours, minutes] = meal.time.split(':').map(Number);
           const isTimePassed = (currentHours > hours) || (currentHours === hours && currentMinutes >= minutes);
           const isNotNotifiedToday = lastNotified[meal.type as keyof typeof lastNotified] !== todayString;
@@ -821,7 +923,7 @@ function startNotificationJob() {
         if (mealToLog) {
           const mealMenu = todayMenu.find(m => m.mealType.toLowerCase() === mealToLog);
           const menuString = mealMenu && mealMenu.items.length > 0 ? mealMenu.items.join(', ') : 'No mess menu available';
-          
+
           const messageText = `Time for ${mealToLog}! 🍽️ (Scheduled for ${scheduledTime})\n\n` +
             `Today's mess menu for ${mealToLog} is:\n📌 *${menuString}*\n\n` +
             `Did you eat in the mess? If not, you can just tell me what you had directly in text (e.g., "I ate 2 paneer parathas at home")!\n\n` +
@@ -886,7 +988,7 @@ function startNotificationJob() {
                 user.odid,
                 "It's Sunday night! 🌙 Please upload a photo of the mess menu for next week so I can keep my records updated! 📸"
               );
-              
+
               user.notifications.lastNotified = {
                 ...(user.notifications.lastNotified || {}),
                 weeklyMenuRequest: todayString

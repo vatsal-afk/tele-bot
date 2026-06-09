@@ -10,23 +10,23 @@ const groq = new Groq({
 // ── Intent types ──────────────────────────────────────────────
 export interface ParsedIntent {
   intent: 'log_meal' | 'log_exercise' | 'log_water' | 'get_suggestion' | 'check_budget' | 'show_dashboard' | 'weekly_summary' | 'help' | 'general_chat' | 'complete_onboarding';
-  
+
   // For log_meal
   mealType?: 'breakfast' | 'lunch' | 'snacks' | 'dinner';
   foodItems?: string[];
   source?: 'mess' | 'canteen' | 'vendor' | 'unknown';
   cost?: number;
   estimatedMacros?: Record<string, { calories: number; protein: number; carbs: number; fats: number }>; // For unknown items
-  
+
   // For log_exercise
   exerciseType?: string;
   duration?: number;
   sets?: number;
   reps?: number;
-  
+
   // For log_water
   waterMl?: number;
-  
+
   // For get_suggestion (including rejection handling)
   maxPrice?: number;
   temperature?: 'cold' | 'hot' | 'any';
@@ -44,7 +44,7 @@ export interface ParsedIntent {
     dietType: 'vegetarian' | 'eggetarian' | 'non-vegetarian';
     fitnessGoal: 'weight-loss' | 'muscle-gain' | 'maintenance';
   };
-  
+
   // Confidence score
   confidence: number;
 }
@@ -82,7 +82,7 @@ export async function classifyIntent(
     recentHistory?: { role: string; content: string }[];
   }
 ): Promise<ParsedIntent> {
-    const systemPrompt = `You are an intent classifier for an IIT Roorkee hostel fitness-tracking Telegram bot.
+  const systemPrompt = `You are an intent classifier for an IIT Roorkee hostel fitness-tracking Telegram bot.
 The user is a student at Rajiv Bhawan hostel. The bot tracks meals (from mess, canteen, or vendors), exercise, water intake, budget, and handles user onboarding.
 
 Current context:
@@ -315,7 +315,7 @@ export const INDIAN_FOOD_DB: Record<string, { calories: number; protein: number;
 
 export function lookupFoodMacros(foodName: string): { calories: number; protein: number; carbs: number; fats: number } | null {
   const lower = foodName.toLowerCase().trim();
-  
+
   // 1. Check Canteen DB
   for (const item of CANTEEN_RAW) {
     if (item[0].toLowerCase() === lower || item[0].toLowerCase().includes(lower)) {
@@ -335,7 +335,7 @@ export function lookupFoodMacros(foodName: string): { calories: number; protein:
   for (const key of Object.keys(INDIAN_FOOD_DB)) {
     if (lower.includes(key) || key.includes(lower)) return INDIAN_FOOD_DB[key];
   }
-  
+
   return null;
 }
 
@@ -347,7 +347,7 @@ export function extractFoodItems(lower: string): string[] {
     ...Object.keys(MESS_MEAL_MACROS),
     ...Object.keys(INDIAN_FOOD_DB)
   ];
-  
+
   const sorted = [...new Set(allNames)].sort((a, b) => b.length - a.length);
   let remaining = lower;
   for (const food of sorted) {
@@ -616,5 +616,79 @@ Provide a concise 2-3 sentence summary and ONE actionable suggestion for the com
   } catch (error) {
     console.error('Groq reflection error:', error);
     return 'Keep consistent with your meal logging for better insights.';
+  }
+}
+
+// ── Mess menu image OCR via Groq Vision ─────────────────────────
+
+const MENU_PARSE_PROMPT = `You are an expert OCR scanner for Indian hostel mess menus.
+Extract the weekly meal schedule from the provided content.
+Return ONLY a valid JSON array (no markdown, no backticks, no intro text):
+[
+  {
+    "dayOfWeek": 0,
+    "breakfast": ["Poha", "Chai"],
+    "lunch": ["Rajma Chawal", "Salad"],
+    "dinner": ["Paneer Bhurji", "Roti"]
+  }
+]
+dayOfWeek: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.
+Rules:
+1. Use clean English food names (e.g. "Aloo Gobhi", "Dal Makhani", "Roti").
+2. Exclude hostel names, dates, signatures.
+3. Return ONLY the JSON array.`;
+
+export async function parseMessMenuFromImage(imageUrl: string): Promise<any> {
+  try {
+    const response = await fetch(imageUrl);
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.2-11b-vision-preview',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: MENU_PARSE_PROMPT },
+            { type: 'image_url', image_url: { url: `data:${contentType};base64,${base64}` } }
+          ] as any
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2000
+    });
+
+    const content = completion.choices[0]?.message?.content || '';
+    console.log('[groq-vision] raw output:', content.slice(0, 300));
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return null;
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    console.error('[groq-vision] error:', e);
+    return null;
+  }
+}
+
+export async function parseMessMenuFromText(text: string): Promise<any> {
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        { role: 'system', content: MENU_PARSE_PROMPT },
+        { role: 'user', content: text }
+      ],
+      temperature: 0.1,
+      max_tokens: 1500
+    });
+
+    const content = completion.choices[0]?.message?.content || '';
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return null;
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    console.error('[groq-text-parse] error:', e);
+    return null;
   }
 }
