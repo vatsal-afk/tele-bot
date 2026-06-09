@@ -1,6 +1,9 @@
 /dist/
 .env
+.env.*
 node_modules/
+data.db
+.drizzle/
 
 /IMPLEMENTATION_PLAN.md
 /plan.md

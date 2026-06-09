@@ -27,10 +27,12 @@ export interface ParsedIntent {
   // For log_water
   waterMl?: number;
   
-  // For get_suggestion
+  // For get_suggestion (including rejection handling)
   maxPrice?: number;
   temperature?: 'cold' | 'hot' | 'any';
   excludeCategories?: string[];
+  rejectedItemName?: string;   // item the user is rejecting e.g. "Soya Chaap"
+  rejectionReason?: string;    // "had_yesterday" | "dont_like" | "too_expensive"
 
   // For complete_onboarding
   onboardingProfile?: {
@@ -96,7 +98,7 @@ Intents:
 - "log_meal": User is explicitly stating they ate or are currently eating specific food items (e.g., "I had 2 rotis", "log a burger"). CRITICAL: Do NOT use this if the user says they "want to eat" something or are asking what to eat. Only use it for factual past/present consumption. Extract: mealType (breakfast/lunch/snacks/dinner), foodItems (array of item names), source (mess/canteen/vendor/unknown), cost. If the user mentions food items that are not standard Indian/campus foods, provide an "estimatedMacros" object mapping the food item name to its estimated macros per serving { calories, protein, carbs, fats } based on ICMR-NIN/NICE standards.
 - "log_exercise": User did or wants to log exercise. Extract: exerciseType, duration (minutes).
 - "log_water": User drank water. Extract: waterMl.
-- "get_suggestion": User is explicitly asking for food recommendations from the campus options (e.g., "what should I eat?", "suggest a snack under 50 rs"). Extract: maxPrice, temperature, excludeCategories.
+- "get_suggestion": User is explicitly asking for food recommendations from the campus options (e.g., "what should I eat?", "suggest a snack under 50 rs"). Also use this when user REJECTS a previous suggestion (e.g., "no give me something else", "I had this yesterday", "don't want that"). Extract: maxPrice, temperature, excludeCategories. If rejecting, ALSO extract: rejectedItemName (exact item name from last suggestion if mentioned), rejectionReason (one of: "had_yesterday", "dont_like", "too_expensive", "not_available", "other").
 - "check_budget": User asks about remaining budget.
 - "show_dashboard": User wants to see today's progress.
 - "weekly_summary": User asks for weekly report.
@@ -145,6 +147,8 @@ Reply ONLY with valid JSON: { "intent": "...", ...entities, "confidence": 0.0-1.
         excludeCategories: parsed.excludeCategories,
         cost: parsed.cost,
         onboardingProfile: parsed.onboardingProfile,
+        rejectedItemName: parsed.rejectedItemName,
+        rejectionReason: parsed.rejectionReason,
         confidence: parsed.confidence ?? 0.5,
       };
     } catch {
@@ -158,6 +162,56 @@ Reply ONLY with valid JSON: { "intent": "...", ...entities, "confidence": 0.0-1.
 
 import { CANTEEN_RAW } from '../data/canteen-items.js';
 import { MESS_MEAL_MACROS } from '../data/mess-menu.js';
+import { searchFoodRecipe } from './webSearch.js';
+
+// ── Search + Groq synthesis for unknown dishes ─────────────────────────
+
+/**
+ * When a dish is not found in any local DB:
+ * 1. Search Tavily for recipe/nutrition snippets
+ * 2. Ask Groq to synthesise macros from snippets
+ * 3. Return macros or null if unresolved
+ */
+export async function searchAndResolveFoodMacros(
+  foodName: string
+): Promise<{ calories: number; protein: number; carbs: number; fats: number } | null> {
+  const snippets = await searchFoodRecipe(foodName);
+  if (snippets.length === 0) return null;
+
+  const prompt = `Estimate the macros per standard single serving for "${foodName}" based on these recipe/nutrition snippets:
+
+${snippets.map((s, i) => `[${i + 1}] ${s}`).join('\n\n')}
+
+Use ICMR-NIN Indian food standards. Reply ONLY with valid JSON:
+{ "calories": number, "protein": number, "carbs": number, "fats": number, "confidence": 0.0-1.0 }
+If you cannot confidently determine macros, return { "confidence": 0 }.`;
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.1-8b-instant',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 150,
+    });
+
+    const raw = completion.choices[0]?.message?.content || '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!parsed.calories || (parsed.confidence ?? 0) < 0.3) return null;
+
+    console.log(`[groq] Resolved "${foodName}" via web search: ${parsed.calories} kcal, ${parsed.protein}g protein`);
+    return {
+      calories: Math.round(parsed.calories),
+      protein: Math.round((parsed.protein || 0) * 10) / 10,
+      carbs: Math.round((parsed.carbs || 0) * 10) / 10,
+      fats: Math.round((parsed.fats || 0) * 10) / 10,
+    };
+  } catch {
+    return null;
+  }
+}
 
 // ── Indian food macro database (per standard serving) ─────────
 export const INDIAN_FOOD_DB: Record<string, { calories: number; protein: number; carbs: number; fats: number }> = {

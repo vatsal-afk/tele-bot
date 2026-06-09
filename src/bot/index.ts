@@ -1,14 +1,17 @@
-import { Bot, Keyboard, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import type { Context } from 'grammy';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
-import { initDB, getUserProfile, saveUserProfile, getDailyLog, addDailyLogEntry, getCanteenItems, saveCanteenItems, getMessMenu, saveMessMenu, saveVendorItems, getAllUsers, getSessionHistory, saveSessionHistory, getOnboardingState, saveOnboardingState, deleteOnboardingState } from '../db/index.js';
+import { initDB, getUserProfile, saveUserProfile, getDailyLog, addDailyLogEntry, getCanteenItems, saveCanteenItems, getMessMenu, saveMessMenu, saveVendorItems, getAllUsers, getSessionHistory, saveSessionHistory, getOnboardingState, saveOnboardingState, deleteOnboardingState, getCachedFood, saveCachedFood, getRejectedItems, addRejection, getTimetable, saveTimetableSlot, clearTimetable } from '../db/index.js';
 import { computeICMRTargets } from '../utils/icmr.js';
 import { getNutritionalGap } from '../utils/icmr.js';
 import { rankItems, generateSuggestion, checkBudgetAndSuggestAlternative, formatSuggestionMessage, calculateCaloriesBurned, type Constraint } from '../services/gapFiller.js';
-import { checkGroqHealth, classifyIntent, generateConversationalReply, generateWeeklyReflection, lookupFoodMacros } from '../services/groq.js';
+import { checkGroqHealth, classifyIntent, generateConversationalReply, generateWeeklyReflection, lookupFoodMacros, searchAndResolveFoodMacros } from '../services/groq.js';
 import { formatGapSummary } from '../utils/icmr.js';
 import { loadCanteenItems, loadMessSchedule, loadVendorLibrary } from '../db/knowledge.js';
+import { lookupOpenFoodFacts, estimateBrandMacrosFromWeb, isLikelyBrandedProduct } from '../services/brandLookup.js';
+import { getCurrentWeather, buildHeatWarningMessage } from '../services/weather.js';
+import { buildEffectiveSlots, isUserInTransition, getNextLocation, parseTimetableText } from '../services/timetable.js';
 
 dotenv.config();
 
@@ -202,6 +205,12 @@ bot.on('callback_query:data', async (ctx) => {
     const itemName = data.split(':')[1];
     await ctx.answerCallbackQuery(`Logged ${itemName}!`);
     await showDashboard(ctx, userId);
+  } else if (data.startsWith('reject:')) {
+    const rejectedItem = data.slice('reject:'.length);
+    const today = new Date().toISOString().split('T')[0];
+    await addRejection(userId, today, rejectedItem, 'button_reject');
+    await ctx.answerCallbackQuery('Got it — finding something else!');
+    await ctx.reply(`No worries! I've noted that you don't want *${rejectedItem}* today. Just say "suggest something else" and I'll give you a different option. 🔄`, { parse_mode: 'Markdown' });
   } else if (data === 'canteen:list') {
     const items = await getCanteenItems();
     const topItems = items.slice(0, 15);
@@ -373,16 +382,42 @@ bot.on('message:text', async (ctx) => {
         for (const foodName of intent.foodItems) {
           const qty = qtyMap.get(foodName.toLowerCase()) || 1;
           const localMacros = lookupFoodMacros(foodName);
-          const macros = localMacros || (intent.estimatedMacros && (intent.estimatedMacros[foodName] || Object.values(intent.estimatedMacros)[0])); // fallback to first estimation if exact name mismatch
+          let macros: { calories: number; protein: number; carbs: number; fats: number } | null | undefined =
+            localMacros || (intent.estimatedMacros && (intent.estimatedMacros[foodName] || Object.values(intent.estimatedMacros)[0])) || null;
           
-          if (macros) {
-            matchedItems.push({
-              name: foodName, quantity: qty,
-              macros: { calories: macros.calories * qty, protein: macros.protein * qty, carbs: macros.carbs * qty, fats: macros.fats * qty },
-              isEstimated: !localMacros
-            });
-          } else {
-            matchedItems.push({ name: foodName, quantity: qty, macros: { calories: 0, protein: 0, carbs: 0, fats: 0 } });
+          // Resolution chain: local DB → cache → brand lookup → web search → ask user
+          if (!macros) {
+            // 1. Check persistent custom cache
+            const cached = await getCachedFood(foodName);
+            if (cached) {
+              macros = { calories: cached.calories, protein: cached.protein, carbs: cached.carbs, fats: cached.fats };
+            }
+          }
+
+          if (!macros) {
+            // 2. Brand lookup (Open Food Facts → Tavily+Groq)
+            if (isLikelyBrandedProduct(foodName)) {
+              const brandResult = await lookupOpenFoodFacts(foodName) || await estimateBrandMacrosFromWeb(foodName);
+              if (brandResult) {
+                macros = { calories: brandResult.calories, protein: brandResult.protein, carbs: brandResult.carbs, fats: brandResult.fats };
+                await saveCachedFood({ name: foodName, ...macros, source: brandResult.source as any, createdAt: Date.now() });
+                await ctx.reply(`🔍 Found *${foodName}*! ${brandResult.calories} kcal, ${brandResult.protein}g protein per ${brandResult.per}. Saved to memory 🧠`, { parse_mode: 'Markdown' });
+              }
+            } else {
+              // 3. Web search + Groq synthesis for unknown dishes
+              await ctx.reply(`🔍 Never heard of *${foodName}*, looking it up...`, { parse_mode: 'Markdown' });
+              const webMacros = await searchAndResolveFoodMacros(foodName);
+              if (webMacros) {
+                macros = webMacros;
+                await saveCachedFood({ name: foodName, ...macros, source: 'web_search', createdAt: Date.now() });
+                await ctx.reply(`✅ Found approximate macros for *${foodName}*: ${macros.calories} kcal, ${macros.protein}g protein. Logged! _(via web search)_`, { parse_mode: 'Markdown' });
+              }
+            }
+          }
+
+          if (!macros) {
+            // 4. Final fallback: ask user
+            await ctx.reply(`❓ I couldn't find verified macro data for *${foodName}*. Could you share the rough protein/calorie content, or should I log it as a generic serving? Reply with something like: _"200 kcal 8g protein"_`, { parse_mode: 'Markdown' });
           }
         }
       }
@@ -486,11 +521,23 @@ bot.on('message:text', async (ctx) => {
       if (intent.temperature && intent.temperature !== 'any') constraints.push({ type: 'temperature', value: intent.temperature });
       if (profile.dietType === 'vegetarian') constraints.push({ type: 'category-exclude', value: 'non-veg' });
 
-      const ranked = rankItems(canteenItems as any, gap, profile.fitnessGoal, budgetRemaining, constraints);
+      // Handle rejection: log rejected item and re-suggest
+      if (intent.rejectedItemName) {
+        await addRejection(userId, today, intent.rejectedItemName, intent.rejectionReason);
+        console.log(`[rejection] Logged: ${intent.rejectedItemName} (${intent.rejectionReason}) for ${userId}`);
+      }
+
+      // Fetch full rejection list for today
+      const rejectedItems = await getRejectedItems(userId, today);
+
+      const ranked = rankItems(canteenItems as any, gap, profile.fitnessGoal, budgetRemaining, constraints, rejectedItems);
       const topItem = ranked[0];
 
       if (!topItem) {
-        await ctx.reply("😅 No items match right now. Try loosening your constraints or check the canteen menu with /log.");
+        const msg = rejectedItems.length > 0
+          ? `😅 I've run out of fresh suggestions after filtering out ${rejectedItems.length} item(s) you've rejected today. Try loosening your constraints or check /canteen for the full list.`
+          : `😅 No items match right now. Try loosening your constraints or check the canteen menu.`;
+        await ctx.reply(msg);
         break;
       }
 
@@ -507,7 +554,7 @@ bot.on('message:text', async (ctx) => {
         await ctx.reply(suggestionMsg, {
           reply_markup: new InlineKeyboard()
             .text('✅ Log This', `accept:${topItem.itemName}`)
-            .text('❌ Skip', 'reject:suggestion'),
+            .text('❌ Something Else', `reject:${topItem.itemName}`),
         });
         await saveSessionHistory(userId, [...history.slice(-5), {role: 'user', content: message}, {role: 'assistant', content: suggestionMsg}]);
       }
@@ -605,6 +652,41 @@ bot.command('budget', async (ctx) => {
   await ctx.reply(`💰 Budget\n\nSpent: ₹${totalSpent}\nRemaining: ₹${remaining}\nDaily: ₹${profile.dailyBudget}`);
 });
 
+bot.command('timetable', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+
+  const text = ctx.message?.text?.replace('/timetable', '').trim();
+
+  if (!text || text === '') {
+    const existing = await getTimetable(userId);
+    if (existing.length > 0) {
+      const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const lines = existing.map(s => `${DAY_NAMES[s.dayOfWeek]} ${s.startTime}–${s.endTime}: ${s.description} @ ${s.location}`).join('\n');
+      await ctx.reply(`📅 *Your current timetable:*\n\`\`\`\n${lines}\n\`\`\`\n\nTo update, send: /timetable Mon 9am-11am LHC Maths\nOr upload a PDF/photo of your timetable.`, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply(`📅 *Set up your timetable* so I can send smarter hydration reminders!\n\nSend your schedule like:\n\`/timetable Mon 9am-11am LHC Maths; Tue 14:00-16:00 ECE Lab\`\n\nOr just upload a *photo* of your timetable. I'm using IITR default class hours for now.`, { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+
+  // Parse the timetable text
+  const parsed = parseTimetableText(text);
+  if (parsed.length === 0) {
+    await ctx.reply('⚠️ Could not parse your timetable. Try format: `Mon 9am-11am LHC Maths; Tue 14:00-16:00 ECE Lab`', { parse_mode: 'Markdown' });
+    return;
+  }
+
+  await clearTimetable(userId);
+  for (const slot of parsed) {
+    await saveTimetableSlot(userId, slot);
+  }
+
+  const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const summary = parsed.map(s => `${DAY_NAMES[s.dayOfWeek]} ${s.startTime}–${s.endTime}: ${s.description}`).join('\n');
+  await ctx.reply(`✅ Timetable saved! I'll send hydration reminders during your transition windows.\n\n${summary}`, { parse_mode: 'Markdown' });
+});
+
 // Error handler
 bot.catch((err) => {
   console.error('Bot error:', err.error);
@@ -666,7 +748,7 @@ function startNotificationJob() {
           
           const messageText = `Time for ${mealToLog}! 🍽️ (Scheduled for ${scheduledTime})\n\n` +
             `Today's mess menu for ${mealToLog} is:\n📌 *${menuString}*\n\n` +
-            `Did you eat in the mess? How much did you eat and what all did you take?\n\n` +
+            `Did you eat in the mess? If not, you can just tell me what you had directly in text (e.g., "I ate 2 paneer parathas at home")!\n\n` +
             `If you haven't eaten yet, let me know what you're having and what activity you're planning to do next (e.g., gym, studying, sleeping). I can suggest the right portion size for you!`;
 
           try {
@@ -689,6 +771,32 @@ function startNotificationJob() {
           } catch (e) {
             console.error(`Failed to send notification to ${user.odid}:`, e);
           }
+        }
+
+        // Weather-triggered hydration nudge during class transitions
+        try {
+          const nowDate = new Date();
+          const userSlots = await getTimetable(user.odid);
+          const effectiveSlots = buildEffectiveSlots(userSlots);
+
+          if (isUserInTransition(effectiveSlots, nowDate)) {
+            const lastNudge = user.notifications.lastHydrationNudge;
+            const nudgeAlreadySentThisCycle = lastNudge === todayString + ':' + currentTimeString.slice(0, 4); // same HH:MM block
+
+            if (!nudgeAlreadySentThisCycle) {
+              const weather = await getCurrentWeather();
+              if (weather?.isExtremeHeat) {
+                const nextLoc = getNextLocation(effectiveSlots, nowDate);
+                const nudgeMsg = buildHeatWarningMessage(weather, nextLoc || undefined);
+                await bot.api.sendMessage(user.odid, nudgeMsg);
+                user.notifications.lastHydrationNudge = todayString + ':' + currentTimeString.slice(0, 4);
+                await saveUserProfile(user);
+                console.log(`[hydration] Sent heat nudge to ${user.odid} (${weather.temperatureCelsius}°C)`);
+              }
+            }
+          }
+        } catch (e) {
+          console.error(`Hydration nudge error for ${user.odid}:`, e);
         }
 
         // Sunday night weekly menu request

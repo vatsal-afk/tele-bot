@@ -122,11 +122,22 @@ export function rankItems(
   gap: GapValues,
   goal: string,
   budgetRemaining: number,
-  constraints: Constraint[]
+  constraints: Constraint[],
+  rejectedItems: string[] = []
 ): GapScore[] {
-  const filteredItems = filterByConstraints(canteenItems, constraints);
+  // 1. Apply dietary/price/temperature constraints
+  let filtered = filterByConstraints(canteenItems, constraints);
 
-  const scoredItems = filteredItems.map(item => 
+  // 2. Filter out today's rejected items (case-insensitive exact or partial match)
+  if (rejectedItems.length > 0) {
+    const rejectedLower = rejectedItems.map(r => r.toLowerCase());
+    filtered = filtered.filter(item => {
+      const nameLower = item.name.toLowerCase();
+      return !rejectedLower.some(r => nameLower === r || nameLower.includes(r) || r.includes(nameLower));
+    });
+  }
+
+  const scoredItems = filtered.map(item =>
     scoreItem(item, gap, goal as any, budgetRemaining)
   );
 
