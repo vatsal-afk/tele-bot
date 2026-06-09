@@ -414,6 +414,9 @@ bot.on('message:text', async (ctx, next) => {
           if (mealMenu && mealMenu.items.length > 0) {
             foodItemsToProcess = mealMenu.items;
             await ctx.reply(`🍽️ Automatically fetching mess ${mealType} menu: *${foodItemsToProcess.join(', ')}*`, { parse_mode: 'Markdown' });
+          } else {
+            await ctx.reply(`⚠️ I don't have the mess menu saved for this day! Please upload a photo of the mess menu with the caption *menu* so I can learn it.`, { parse_mode: 'Markdown' });
+            break;
           }
         }
       }
