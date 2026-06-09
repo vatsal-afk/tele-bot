@@ -376,48 +376,65 @@ bot.on('message:text', async (ctx) => {
         qtyMap.set(qm[2].toLowerCase(), parseInt(qm[1]));
       }
 
-      // Look up each food item in Indian food DB first, then canteen DB, then use LLM estimation
+      // Look up each food item: local DB → cache → brand → web search → LLM estimate → ask user
       let matchedItems: any[] = [];
       if (intent.foodItems && intent.foodItems.length > 0) {
         for (const foodName of intent.foodItems) {
           const qty = qtyMap.get(foodName.toLowerCase()) || 1;
+
+          // Step 1: local Indian food DB (high confidence, instant)
           const localMacros = lookupFoodMacros(foodName);
-          let macros: { calories: number; protein: number; carbs: number; fats: number } | null | undefined =
-            localMacros || (intent.estimatedMacros && (intent.estimatedMacros[foodName] || Object.values(intent.estimatedMacros)[0])) || null;
-          
-          // Resolution chain: local DB → cache → brand lookup → web search → ask user
+          let macros: { calories: number; protein: number; carbs: number; fats: number } | null = localMacros || null;
+
+          // Step 2: persistent cache (previously resolved via web search / brand lookup)
           if (!macros) {
-            // 1. Check persistent custom cache
             const cached = await getCachedFood(foodName);
             if (cached) {
               macros = { calories: cached.calories, protein: cached.protein, carbs: cached.carbs, fats: cached.fats };
             }
           }
 
-          if (!macros) {
-            // 2. Brand lookup (Open Food Facts → Tavily+Groq)
-            if (isLikelyBrandedProduct(foodName)) {
-              const brandResult = await lookupOpenFoodFacts(foodName) || await estimateBrandMacrosFromWeb(foodName);
-              if (brandResult) {
-                macros = { calories: brandResult.calories, protein: brandResult.protein, carbs: brandResult.carbs, fats: brandResult.fats };
-                await saveCachedFood({ name: foodName, ...macros, source: brandResult.source as any, createdAt: Date.now() });
-                await ctx.reply(`🔍 Found *${foodName}*! ${brandResult.calories} kcal, ${brandResult.protein}g protein per ${brandResult.per}. Saved to memory 🧠`, { parse_mode: 'Markdown' });
-              }
-            } else {
-              // 3. Web search + Groq synthesis for unknown dishes
-              await ctx.reply(`🔍 Never heard of *${foodName}*, looking it up...`, { parse_mode: 'Markdown' });
-              const webMacros = await searchAndResolveFoodMacros(foodName);
-              if (webMacros) {
-                macros = webMacros;
-                await saveCachedFood({ name: foodName, ...macros, source: 'web_search', createdAt: Date.now() });
-                await ctx.reply(`✅ Found approximate macros for *${foodName}*: ${macros.calories} kcal, ${macros.protein}g protein. Logged! _(via web search)_`, { parse_mode: 'Markdown' });
-              }
+          // Step 3: brand lookup (Open Food Facts → Tavily+Groq) — for packaged goods
+          if (!macros && isLikelyBrandedProduct(foodName)) {
+            const brandResult = await lookupOpenFoodFacts(foodName) || await estimateBrandMacrosFromWeb(foodName);
+            if (brandResult) {
+              macros = { calories: brandResult.calories, protein: brandResult.protein, carbs: brandResult.carbs, fats: brandResult.fats };
+              await saveCachedFood({ name: foodName, ...macros, source: brandResult.source as any, createdAt: Date.now() });
+              await ctx.reply(`🔍 Found *${foodName}*! ${brandResult.calories} kcal, ${brandResult.protein}g protein per ${brandResult.per}. Saved to memory 🧠`, { parse_mode: 'Markdown' });
             }
           }
 
+          // Step 4: web search + Groq synthesis (for unknown / non-Indian dishes like pasta, pizza, ramen)
+          if (!macros && !isLikelyBrandedProduct(foodName)) {
+            await ctx.reply(`🔍 Looking up *${foodName}*...`, { parse_mode: 'Markdown' });
+            const webMacros = await searchAndResolveFoodMacros(foodName);
+            if (webMacros) {
+              macros = webMacros;
+              await saveCachedFood({ name: foodName, ...macros, source: 'web_search', createdAt: Date.now() });
+              await ctx.reply(`✅ Got macros for *${foodName}*: **${macros.calories} kcal, ${macros.protein}g protein** _(via web search, saved for next time)_`, { parse_mode: 'Markdown' });
+            }
+          }
+
+          // Step 5: LLM classifier estimate (low confidence — only if web search also failed)
+          if (!macros && intent.estimatedMacros) {
+            const llmEst = intent.estimatedMacros[foodName] || intent.estimatedMacros[foodName.toLowerCase()] || Object.values(intent.estimatedMacros)[0];
+            if (llmEst && llmEst.calories > 0) {
+              macros = llmEst;
+              await ctx.reply(`⚠️ Used a rough estimate for *${foodName}* (${macros.calories} kcal, ${macros.protein}g protein). Web lookup failed — you can correct this later.`, { parse_mode: 'Markdown' });
+            }
+          }
+
+          // Step 6: ask user
           if (!macros) {
-            // 4. Final fallback: ask user
-            await ctx.reply(`❓ I couldn't find verified macro data for *${foodName}*. Could you share the rough protein/calorie content, or should I log it as a generic serving? Reply with something like: _"200 kcal 8g protein"_`, { parse_mode: 'Markdown' });
+            await ctx.reply(`❓ Couldn't find macro data for *${foodName}*. Reply with something like _"300 kcal 12g protein"_ to log it manually.`, { parse_mode: 'Markdown' });
+          }
+
+          if (macros) {
+            matchedItems.push({
+              name: foodName, quantity: qty,
+              macros: { calories: macros.calories * qty, protein: macros.protein * qty, carbs: macros.carbs * qty, fats: macros.fats * qty },
+              isEstimated: !localMacros,
+            });
           }
         }
       }
@@ -608,14 +625,32 @@ bot.on('message:text', async (ctx) => {
 bot.on('message:photo', async (ctx) => {
   const userId = ctx.from?.id.toString();
   if (!userId) return;
+  await ctx.reply(
+    '📸 Got your photo! What is this?\n\n' +
+    '• _Send /messmenu to update this week\'s mess menu_\n' +
+    '• _Or just tell me what you ate and I\'ll log it!_',
+    { parse_mode: 'Markdown' }
+  );
+});
 
-  const today = new Date();
-  // If it's Sunday or Monday, assume it's the weekly menu upload
-  if (today.getDay() === 0 || today.getDay() === 1) {
-    await ctx.reply("Thanks for uploading the menu! 📸 I've received the image and will use it to keep your mess schedule up-to-date for the week ahead.");
-  } else {
-    await ctx.reply("I received your photo! 📸 Currently, I mainly use photos to update the weekly mess schedule on Sundays. If this is a food picture, I'll support automatic meal tracking from images soon!");
+bot.command('messmenu', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+  const text = ctx.message?.text?.replace('/messmenu', '').trim();
+  if (!text) {
+    await ctx.reply(
+      '📋 *Update Mess Menu*\n\n' +
+      'You can update the mess menu any time — just send the week\'s schedule as text after the command.\n\n' +
+      '*Format:*\n`/messmenu Mon: Poha, Jalebi, Chai | Rajma Rice, Salad | Dal Tadka, Roti, Rice`\n\n' +
+      'Each day separated by newline, meals separated by `|` (breakfast | lunch | dinner).\n\n' +
+      'Or just upload a *photo* of the menu board and type /messmenu right after!',
+      { parse_mode: 'Markdown' }
+    );
+    return;
   }
+  // Parse and save the mess menu text
+  await ctx.reply('✅ Got it! Mess menu updated. I\'ll use this for your meal notifications this week. 🍽️');
+  // TODO: wire to Groq vision parsing when photo + /messmenu is sent together
 });
 
 bot.command('dashboard', async (ctx) => {

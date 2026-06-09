@@ -2,7 +2,7 @@ name: Meal Notifications
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # Every 5 minutes
+    - cron: '*/5 * * * *'   # Every 5 minutes (GitHub minimum; IST = UTC+5:30)
   workflow_dispatch:          # Allow manual trigger
 
 jobs:
@@ -23,4 +23,6 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: npm run notify

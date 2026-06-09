@@ -472,12 +472,31 @@ export async function generateConversationalReply(
     recentHistory?: { role: string; content: string }[];
   }
 ): Promise<string> {
-  const systemPrompt = `You are a friendly IIT Roorkee hostel fitness buddy bot. You're casual, supportive, and concise (max 3 sentences).
-The student lives in Rajiv Bhawan. Their goal is ${context.fitnessGoal}.
+  const name = context.userName ? context.userName.split(' ')[0] : 'bhai';
+  const mealsLogged = context.todayMealsLogged.length > 0 ? context.todayMealsLogged.join(', ') : 'nothing yet';
+  const goalEmoji = context.fitnessGoal === 'muscle-gain' ? '💪' : context.fitnessGoal === 'weight-loss' ? '🔥' : '⚖️';
 
-Today's status: ${context.gapSummary}. Budget left: ₹${context.budgetRemaining}. Meals logged: ${context.todayMealsLogged.join(', ') || 'none yet'}.
+  const systemPrompt = `You are BhawanBuddy — a senior IIT Roorkee student in Rajiv Bhawan who is deeply into fitness and genuinely wants to help juniors eat better in the hostel. You're the friend every hostelite needs: knowledgeable, warm, slightly sarcastic in a fun way, and always practical about hostel constraints.
 
-If the user is just chatting, be friendly. If they seem to need guidance, gently nudge them toward logging meals, exercise, or water. Use emojis sparingly. Don't be preachy.`;
+Your personality:
+- Natural mix of casual English with occasional Hindi words (yaar, bhai, sahi, bilkul, kal, aaj)
+- You know IITR campus well: the mess timings, CCD on CC Road, Gate 3 vendors, Green Gala Cafe near library, the LHC, Rajiv gym
+- Specific and actionable — never generic platitudes
+- Use Telegram Markdown: **bold** for numbers and food names, _italics_ for emphasis
+- Responses are 2-4 sentences max. Use bullet points only for listing 3+ items
+
+Student context right now:
+- Name: ${name} | Goal: ${context.fitnessGoal} ${goalEmoji}
+- Nutrition status: ${context.gapSummary}
+- Budget remaining: ₹${context.budgetRemaining}
+- Logged today: ${mealsLogged}
+
+Rules:
+1. If they skipped meals, call it out gently and suggest something specific from the campus
+2. Give real answers grounded in their goal (${context.fitnessGoal})
+3. If they hit their protein goal, briefly celebrate then move on
+4. You are BhawanBuddy — never break character
+5. End with a light action nudge — never preachy`;
 
   try {
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
@@ -487,15 +506,15 @@ If the user is just chatting, be friendly. If they seem to need guidance, gently
     messages.push({ role: 'user', content: userMessage });
 
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
+      model: 'llama-3.3-70b-versatile',
       messages,
-      temperature: 0.5,
-      max_tokens: 200,
+      temperature: 0.7,
+      max_tokens: 250,
     });
 
-    return completion.choices[0]?.message?.content || "Hey! I'm here to help with your fitness tracking. Try telling me what you ate, or ask for a food suggestion! 💪";
+    return completion.choices[0]?.message?.content || "Yaar, kuch technical issue ho gaya. Try again in a sec! 🔧";
   } catch {
-    return "Hey! I'm here to help track your meals, exercise, and water. Just tell me what you ate, how you worked out, or ask for suggestions! 💪";
+    return "Arre, server side kuch gadbad hai. Try again in a moment — and log that meal before you forget! 📝";
   }
 }
 

@@ -38,10 +38,15 @@ async function runNotifications() {
     for (const meal of mealsToProcess) {
       if (!meal.time) continue;
       const [hours, minutes] = meal.time.split(':').map(Number);
-      const isTimePassed = (currentHours > hours) || (currentHours === hours && currentMinutes >= minutes);
+      const scheduledTotalMins = hours * 60 + minutes;
+      const currentTotalMins = currentHours * 60 + currentMinutes;
+      const diffMins = currentTotalMins - scheduledTotalMins;
+
+      // Only fire within +0 to +10 minutes of the scheduled time
+      const isInWindow = diffMins >= 0 && diffMins <= 10;
       const isNotNotifiedToday = lastNotified[meal.type as keyof typeof lastNotified] !== todayString;
 
-      if (isTimePassed && isNotNotifiedToday) {
+      if (isInWindow && isNotNotifiedToday) {
         const mealMenu = todayMenu.find(m => m.mealType.toLowerCase() === meal.type);
         const menuString = mealMenu?.items?.length ? mealMenu.items.join(', ') : 'No mess menu available';
 
