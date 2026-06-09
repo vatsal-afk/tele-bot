@@ -9,6 +9,7 @@ import { rankItems, generateSuggestion, checkBudgetAndSuggestAlternative, format
 import { checkGroqHealth, classifyIntent, generateConversationalReply, generateWeeklyReflection, lookupFoodMacros, searchAndResolveFoodMacros, parseMessMenuFromImage, parseMessMenuFromText } from '../services/groq.js';
 import { formatGapSummary } from '../utils/icmr.js';
 import { loadCanteenItems, loadMessSchedule, loadVendorLibrary } from '../db/knowledge.js';
+import { DAILY_BREAKFAST, DAILY_LUNCH_SIDES, DAILY_DINNER_SIDES } from '../data/mess-menu.js';
 import { lookupOpenFoodFacts, estimateBrandMacrosFromWeb, isLikelyBrandedProduct } from '../services/brandLookup.js';
 import { getCurrentWeather, buildHeatWarningMessage } from '../services/weather.js';
 import { buildEffectiveSlots, isUserInTransition, getNextLocation, parseTimetableText } from '../services/timetable.js';
@@ -693,8 +694,13 @@ bot.on('message:photo', async (ctx) => {
       for (const day of parsedMenu) {
         if (day.dayOfWeek === undefined) continue;
         for (const mealType of ['breakfast', 'lunch', 'dinner']) {
-          const items = day[mealType] || [];
+          let items = day[mealType] || [];
           if (items.length > 0) {
+            // Inject daily common items automatically
+            if (mealType === 'breakfast') items = [...new Set([...items, ...DAILY_BREAKFAST])];
+            if (mealType === 'lunch') items = [...new Set([...items, ...DAILY_LUNCH_SIDES])];
+            if (mealType === 'dinner') items = [...new Set([...items, ...DAILY_DINNER_SIDES])];
+            
             dbItems.push({
               id: `${day.dayOfWeek}-${mealType}`,
               dayOfWeek: day.dayOfWeek,
@@ -766,8 +772,12 @@ bot.command('messmenu', async (ctx) => {
     for (const day of parsed) {
       if (day.dayOfWeek === undefined) continue;
       for (const mealType of ['breakfast', 'lunch', 'dinner']) {
-        const items = day[mealType] || [];
+        let items = day[mealType] || [];
         if (items.length > 0) {
+          if (mealType === 'breakfast') items = [...new Set([...items, ...DAILY_BREAKFAST])];
+          if (mealType === 'lunch') items = [...new Set([...items, ...DAILY_LUNCH_SIDES])];
+          if (mealType === 'dinner') items = [...new Set([...items, ...DAILY_DINNER_SIDES])];
+
           dbItems.push({
             id: `${day.dayOfWeek}-${mealType}`,
             dayOfWeek: day.dayOfWeek,

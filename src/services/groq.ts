@@ -640,38 +640,30 @@ Rules:
 2. Exclude hostel names, dates, signatures.
 3. Return ONLY the JSON object. No other text.`;
 
+import Tesseract from 'tesseract.js';
+
 export async function parseMessMenuFromImage(imageUrl: string): Promise<any> {
   try {
+    console.log('[ocr] Fetching image for Tesseract...');
     const response = await fetch(imageUrl);
     const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
-    // Telegram sometimes gives generic content types, let's force image/jpeg if it's not clear
-    let contentType = response.headers.get('content-type') || 'image/jpeg';
-    if (!contentType.startsWith('image/')) contentType = 'image/jpeg';
-
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.2-90b-vision-preview',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: MENU_PARSE_PROMPT },
-            { type: 'image_url', image_url: { url: `data:${contentType};base64,${base64}` } }
-          ] as any
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 4000,
-      response_format: { type: 'json_object' }
+    
+    console.log('[ocr] Running Tesseract OCR...');
+    const { data: { text } } = await Tesseract.recognize(Buffer.from(buffer), 'eng', {
+      logger: m => console.log(`[tesseract] ${m.status}: ${Math.round(m.progress * 100)}%`)
     });
 
-    const content = completion.choices[0]?.message?.content || '{}';
-    console.log('[groq-vision] output parsed successfully');
-    
-    const parsed = JSON.parse(content);
-    return parsed.schedule || [];
+    console.log('[ocr] Extracted raw text length:', text.length);
+    if (!text || text.trim().length < 20) {
+      console.log('[ocr] Text too short, extraction likely failed');
+      return null;
+    }
+
+    console.log('[ocr] Passing extracted text to Llama 70B for structuring...');
+    // We already have the text parser ready to go
+    return await parseMessMenuFromText(text);
   } catch (e) {
-    console.error('[groq-vision] error:', e);
+    console.error('[ocr] error:', e);
     return null;
   }
 }
